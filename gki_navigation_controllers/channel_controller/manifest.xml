@@ -1,0 +1,21 @@
+<package>
+  <description brief="channel_controller">
+     channel_controller
+  </description>
+  <author>dornhege</author>
+  <license>BSD</license>
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/channel_controller</url>
+  <depend package="roscpp"/>
+  <depend package="nav_core"/>
+  <depend package="pluginlib"/>
+  <depend package="dynamicvoronoi"/>
+  <depend package="visualization_msgs"/>
+
+  <export>
+    <nav_core plugin="${prefix}/channel_controller_plugins.xml" />
+  </export>
+
+</package>
+
+
