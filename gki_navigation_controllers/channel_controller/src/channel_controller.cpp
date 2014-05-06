@@ -27,7 +27,7 @@ void ChannelController::initialize(std::string name,
 
     // Name is probably something like channel_controller::ChannelController
     // And our param then should be ChannelController
-    ssize_t colon = name.find_last_of(":");
+    size_t colon = name.find_last_of(":");
     std::string class_name = name.substr(colon + 1);
     if(colon == std::string::npos)
         class_name = name;
@@ -50,8 +50,10 @@ void ChannelController::initialize(std::string name,
 void ChannelController::updateVoronoi()
 {
     costmap_ros_->getCostmapCopy(costmap_);     // srsly we have to copy that to get to the data??????
+    ROS_ASSERT(costmap_.getSizeInCellsX() == voronoi_.getSizeX());
+    ROS_ASSERT(costmap_.getSizeInCellsY() == voronoi_.getSizeY());
+
     std::vector<IntPoint> obstacles;
-    // TODO everywhere assert voronoi size == costmap size
     for(unsigned int x = 0; x < costmap_.getSizeInCellsX(); x++) {
         for(unsigned int y = 0; y < costmap_.getSizeInCellsY(); y++) {
             if(costmap_.getCost(x, y) >= costmap_2d::LETHAL_OBSTACLE) { // lethal and unknown
@@ -68,6 +70,9 @@ void ChannelController::updateVoronoi()
 
 void ChannelController::visualizeVoronoi()
 {
+    ROS_ASSERT(costmap_.getSizeInCellsX() == voronoi_.getSizeX());
+    ROS_ASSERT(costmap_.getSizeInCellsY() == voronoi_.getSizeY());
+
     visualization_msgs::MarkerArray channelMarkers;
     visualization_msgs::Marker voronoiMarker;
     voronoiMarker.header.frame_id = costmap_ros_->getGlobalFrameID();
@@ -82,7 +87,7 @@ void ChannelController::visualizeVoronoi()
     voronoiMarker.scale.z = costmap_.getResolution() * sqrt(2.0);
     voronoiMarker.frame_locked = false;
     geometry_msgs::Point cellPoint;
-    cellPoint.z = 0.0;
+    cellPoint.z = - costmap_.getResolution() * sqrt(2.0)/2.0;
     std_msgs::ColorRGBA cellColor;
     cellColor.a = 1.0;
     for(unsigned int x = 0; x < costmap_.getSizeInCellsX(); x++) {
@@ -91,6 +96,7 @@ void ChannelController::visualizeVoronoi()
             dist *= costmap_.getResolution();   // now in meters
             costmap_.mapToWorld(x, y, cellPoint.x, cellPoint.y);
             voronoiMarker.points.push_back(cellPoint);
+
             if(dist == -INFINITY) {
                 cellColor.r = 1.0;
                 cellColor.g = 0.0;
@@ -103,7 +109,7 @@ void ChannelController::visualizeVoronoi()
                 if(dist > vis_max_dist_) {
                     cellColor.r = cellColor.g = cellColor.b = 1.0;
                 } else {
-                    // make those slightly darker then max dist as max to distinguish
+                    // make those slightly darker then max dist to distinguish
                     // vis max dist regions
                     cellColor.r = cellColor.g = cellColor.b = 0.9 * dist / vis_max_dist_;
                 }
@@ -124,11 +130,32 @@ bool ChannelController::isGoalReached()
 bool ChannelController::setPlan(const std::vector<geometry_msgs::PoseStamped> & plan)
 {
     // TODO return value means what?
+    // True if the plan was updated successfully, false otherwise
+
+    return true;
 }
 
 bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
 {
+    // True if a valid velocity command was found, false otherwise
     updateVoronoi();    // TODO how horrible is this performance-wise?
+
+    // Define what a channel is
+    // - local/min channel with braking? - Start simple, but extensible
+    // - the max channel that steers towards min channel and will basically expand around min channel
+    //  to speed up if poss -> but always guarantee min channel reachable if poss
+    //
+    //  Main goal: everything reachable with braking/slowest speed is something that we can reach (if slowly)
+    //  Secondary: If there is connected space around our min channel we speed up
+    //  Ternary: Maybe drive a "bend" around the min channel (e.g. farther away from wall) to get more speed even if we leave the min channel
+    //
+    //  Define what makes a min/max channel parameter-wise -> What is input, what is output param of channel?
+    // Then impl and display the channel computations.
+    //
+    // Must judge the "best" channels given those impls.
+    // Finally - derive control comamnds for driving to channel.
+
+    return true;
 }
 
 }
