@@ -1,0 +1,22 @@
+<package>
+  <description brief="global_planner_straight_ahead">
+
+     global_planner_straight_ahead
+
+  </description>
+  <author>dornhege</author>
+  <license>BSD</license>
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/global_planner_straight_ahead</url>
+  <depend package="roscpp"/>
+  <depend package="nav_core"/>
+  <depend package="pluginlib"/>
+  <depend package="nav_msgs"/>
+
+  <export>
+    <nav_core plugin="${prefix}/global_planner_straight_ahead_plugins.xml" />
+  </export>
+
+</package>
+
+

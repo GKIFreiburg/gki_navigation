@@ -1,0 +1,7 @@
+<library path="lib/libglobal_planner_straight_ahead">
+    <class type="global_planner_straight_ahead::GlobalPlannerStraightAhead" base_class_type="nav_core::BaseGlobalPlanner">
+        <description>
+        Just drive straight ahead.
+        </description>
+    </class>
+</library>
