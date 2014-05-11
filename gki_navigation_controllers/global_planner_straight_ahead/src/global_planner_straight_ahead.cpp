@@ -30,12 +30,14 @@ bool GlobalPlannerStraightAhead::makePlan(const geometry_msgs::PoseStamped & sta
     plan.push_back(start);
     tf::Pose startTF;
     tf::poseMsgToTF(start.pose, startTF);
-    tf::Pose oneMeter(tf::Quaternion(0, 0, 0, 1), tf::Vector3(1.0, 0.0, 0.0));
-    tf::Pose oneMeterAhead = startTF * oneMeter;
-    geometry_msgs::PoseStamped psOneMeterAhead;
-    psOneMeterAhead.header = start.header;
-    tf::poseTFToMsg(oneMeterAhead, psOneMeterAhead.pose);
-    plan.push_back(psOneMeterAhead);
+    for(double dx = 0.1; dx <= 1.0; dx += 0.1) {
+        tf::Pose upToOneMeter(tf::Quaternion(0, 0, 0, 1), tf::Vector3(dx, 0.0, 0.0));
+        tf::Pose oneMeterAhead = startTF * upToOneMeter;
+        geometry_msgs::PoseStamped psOneMeterAhead;
+        psOneMeterAhead.header = start.header;
+        tf::poseTFToMsg(oneMeterAhead, psOneMeterAhead.pose);
+        plan.push_back(psOneMeterAhead);
+    }
 
     ROS_INFO("GlobalPlannerStraightAhead, new goal: %f %f -> %f %f",
             start.pose.position.x, start.pose.position.y,
