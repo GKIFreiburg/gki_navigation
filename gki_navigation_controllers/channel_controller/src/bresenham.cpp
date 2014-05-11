@@ -67,19 +67,15 @@ class PrintC
             printf("%d %d\n", x, y);
         }
 };
-// TODO negative coords
 
-template <class ActionType, class ActionType2>
-inline void raytraceLine(ActionType at, ActionType2 at2, unsigned int x0, unsigned int y0, unsigned int x1, unsigned int y1, unsigned int max_length = UINT_MAX)
+template <class ActionType>
+inline void raytraceLine(ActionType at, unsigned int x0, unsigned int y0, unsigned int x1, unsigned int y1, unsigned int max_length = UINT_MAX)
 {
     int dx = x1 - x0;
     int dy = y1 - y0;
 
     unsigned int abs_dx = abs(dx);
     unsigned int abs_dy = abs(dy);
-
-    int cur_x = x0;
-    int cur_y = y0;
 
     //we need to chose how much to scale our dominant dimension, based on the maximum length of the line
     double dist = sqrt((x0 - x1) * (x0 - x1) + (y0 - y1) * (y0 - y1));
@@ -88,40 +84,30 @@ inline void raytraceLine(ActionType at, ActionType2 at2, unsigned int x0, unsign
     //if x is dominant
     if(abs_dx >= abs_dy){
         int error_y = abs_dx / 2;
-        bresenham2D(at, at2, abs_dx, abs_dy, error_y,
+        bresenham2D(at, abs_dx, abs_dy, error_y,
                 dx, dy,
                 true,
-                cur_x, cur_y, (unsigned int)(scale * abs_dx));
+                x0, y0, (unsigned int)(scale * abs_dx));
         return;
     }
 
     //otherwise y is dominant
     int error_x = abs_dy / 2;
-    bresenham2D(at, at2, abs_dy, abs_dx, error_x,
+    bresenham2D(at, abs_dy, abs_dx, error_x,
             dx, dy,
             false,
-            cur_x, cur_y, (unsigned int)(scale * abs_dy));
+            x0, y0, (unsigned int)(scale * abs_dy));
 }
 
-template <class ActionType, class ActionType2>
-inline void bresenham2D(ActionType at, ActionType2 at2, unsigned int abs_da, unsigned int abs_db, int error_b,
+template <class ActionType>
+inline void bresenham2D(ActionType at, unsigned int abs_da, unsigned int abs_db, int error_b,
         int dx, int dy,
         bool go_x,
-        int cur_x, int cur_y, unsigned int max_length){
-
-    int offset_a = sign(dx);
-    int offset_b = sign(dy) * size_x_;
-    if(!go_x) {
-        offset_b = sign(dx);
-        offset_a = sign(dy) * size_x_;
-    }
-
-    unsigned int offset = cur_y * size_x_ + cur_x;
+        int cur_x, int cur_y, unsigned int max_length)
+{
     unsigned int end = std::min(max_length, abs_da);
     for(unsigned int i = 0; i < end; ++i){
-        at(offset);
-        at2(cur_x, cur_y);
-        offset += offset_a;
+        at(cur_x, cur_y);
         if(go_x) {
             cur_x += sign(dx);
         } else {
@@ -129,7 +115,6 @@ inline void bresenham2D(ActionType at, ActionType2 at2, unsigned int abs_da, uns
         }
         error_b += abs_db;
         if((unsigned int)error_b >= abs_da){
-            offset += offset_b;
             if(go_x) {
                 cur_y += sign(dy);
             } else {
@@ -138,12 +123,14 @@ inline void bresenham2D(ActionType at, ActionType2 at2, unsigned int abs_da, uns
             error_b -= abs_da;
         }
     }
-    at(offset);
-    at2(cur_x, cur_y);
+    at(cur_x, cur_y);
 }
 
 int main(int argc, char** argv)
 {
-    raytraceLine(Print(), PrintC(), 0, 0, 10, 5);
-    raytraceLine(Print(), PrintC(), 0, 0, 5, 10);
+    raytraceLine(PrintC(), 0, 0, 10, 5);
+
+    raytraceLine(PrintC(), 0, 0, 5, 10);
+
+    raytraceLine(PrintC(), 10, 0, -5, 10);
 }
