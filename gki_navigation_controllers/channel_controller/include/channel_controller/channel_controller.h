@@ -6,8 +6,7 @@
 
 namespace channel_controller
 {
-    // TODO min setup
-    // Upon that: What fns will I need in general?
+
     class ChannelController : public nav_core::BaseLocalPlanner
     {
         public:
@@ -27,13 +26,34 @@ namespace channel_controller
             void updateVoronoi();
             void visualizeVoronoi();
 
+            /// Transform global_plan_ to the controller frame starting at start_index.
+            bool localizeGlobalPlan(unsigned int start_index);
+
+            bool currentWaypointReached() const;
+
         protected:
             tf::TransformListener* tf_;
             costmap_2d::Costmap2DROS* costmap_ros_;
             costmap_2d::Costmap2D costmap_;
             DynamicVoronoi voronoi_;
 
+            /// Current waypoint that we are approaching in the global plan.
+            unsigned int current_waypoint_;
+            /// Global plan as set externally
+            std::vector<geometry_msgs::PoseStamped> global_plan_;
+            /// Localized global plan in the cost map's global frame
+            /// starting at the current_waypoint_
+            std::vector< tf::Stamped<tf::Pose> > local_plan_;
+
             ros::Publisher pub_markers_;
+            ros::Publisher pub_local_plan_;
+
+            /// Waypoints within this are considered reached (unless goal wpt)
+            double waypoint_reached_dist_;
+            double waypoint_reached_angle_;
+            /// Goal waypoint is considered reached
+            double goal_reached_dist_;
+            double goal_reached_angle_;
 
             double min_vel_lin_;
             double max_vel_lin_;
