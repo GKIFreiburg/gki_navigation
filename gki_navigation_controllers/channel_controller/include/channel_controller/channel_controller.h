@@ -2,10 +2,21 @@
 #define CHANNEL_CONTROLLER_H
 
 #include <nav_core/base_local_planner.h>
+#include <visualization_msgs/MarkerArray.h>
 #include "dynamicvoronoi/dynamicvoronoi.h"
 
 namespace channel_controller
 {
+    class DriveChannel
+    {
+        public:
+            tf::Pose from_pose_;
+            tf::Pose to_pose_;
+            double min_dist_;      ///< min width along the whole channel
+
+            double length() const { return from_pose_.inverseTimes(to_pose_).getOrigin().length(); }
+
+    };
 
     class ChannelController : public nav_core::BaseLocalPlanner
     {
@@ -30,6 +41,16 @@ namespace channel_controller
             bool localizeGlobalPlan(unsigned int start_index);
 
             bool currentWaypointReached() const;
+
+            /// Compute max length of channel in a direction angle that has guaranteed clearance_dist.
+            DriveChannel computeChannel(tf::Pose from_pose, tf::Pose to_pose, double clearance_dist) const;
+
+            visualization_msgs::Marker createChannelMarkers(
+                    const std::vector<DriveChannel> & channels, double min_good_dist) const;
+
+            visualization_msgs::Marker createPoseMarker(const tf::Pose & pose,
+                    double r, double g, double b,
+                    const std::string & ns, int id = 0) const;
 
         protected:
             tf::TransformListener* tf_;

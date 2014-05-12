@@ -35,7 +35,7 @@ public:
   void prune();
   
   //! returns the obstacle distance at the specified location
-  float getDistance( int x, int y );
+  float getDistance ( int x, int y ) const;
   //! returns whether the specified cell is part of the (pruned) Voronoi graph
   bool isVoronoi( int x, int y );
   //! checks whether the specficied location is occupied
@@ -44,9 +44,9 @@ public:
   void visualize(const char* filename="result.ppm");
 
   //! returns the horizontal size of the workspace/map
-  unsigned int getSizeX() {return sizeX;}
+  unsigned int getSizeX() const {return sizeX;}
   //! returns the vertical size of the workspace/map
-  unsigned int getSizeY() {return sizeY;}
+  unsigned int getSizeY() const {return sizeY;}
 
 private:  
   struct dataCell {

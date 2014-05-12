@@ -9,6 +9,7 @@
   <depend package="roscpp"/>
   <depend package="nav_core"/>
   <depend package="pluginlib"/>
+  <depend package="angles"/>
   <depend package="dynamicvoronoi"/>
   <depend package="visualization_msgs"/>
 
