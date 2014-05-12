@@ -269,7 +269,8 @@ DriveChannel ChannelController::computeChannel(tf::Pose from_pose, tf::Pose to_p
 }
 
 visualization_msgs::Marker ChannelController::createChannelMarkers(
-        const std::vector<DriveChannel> & channels, double min_good_dist) const
+        const std::vector<DriveChannel> & channels, double min_good_dist,
+        int best_idx) const
 {
     visualization_msgs::Marker channelMarker;
     channelMarker.header.stamp = ros::Time(0);
@@ -280,13 +281,22 @@ visualization_msgs::Marker ChannelController::createChannelMarkers(
     channelMarker.action = visualization_msgs::Marker::ADD;
     channelMarker.pose.orientation.w = 1.0;
     channelMarker.scale.x = 0.01;
-    //channelMarker.color.r = 0.0;
-    //channelMarker.color.g = 1.0;
-    //channelMarker.color.b = 0.0;
     channelMarker.lifetime = ros::Duration(0);
     channelMarker.frame_locked = false;
 
+    int index = 0;
     forEach(const DriveChannel & channel, channels) {
+        // rotation of 90 for half of min_dist_ and the end to show width
+        tf::Pose channelDelta = channel.from_pose_.inverseTimes(channel.to_pose_);
+        double dir = atan2(channelDelta.getOrigin().y(), channelDelta.getOrigin().x());
+        tf::Vector3 half_width(0.0, channel.min_dist_/2.0, 0.0);
+        tf::Vector3 half_width_other(0.0, -channel.min_dist_/2.0, 0.0);
+        tf::Pose side_offset(tf::createQuaternionFromYaw(0.0), half_width);
+        tf::Pose side_offset_other(tf::createQuaternionFromYaw(0.0), half_width_other);
+        tf::Pose channel_dir(tf::createQuaternionFromYaw(dir));
+        tf::Pose z = tf::Pose(channel.from_pose_.getRotation()) * channel_dir * side_offset;
+        tf::Pose z2 = tf::Pose(channel.from_pose_.getRotation()) * channel_dir * side_offset_other;
+
         geometry_msgs::Point pt;
         pt.x = channel.from_pose_.getOrigin().x();
         pt.y = channel.from_pose_.getOrigin().y();
@@ -295,19 +305,33 @@ visualization_msgs::Marker ChannelController::createChannelMarkers(
         pt.x = channel.to_pose_.getOrigin().x();
         pt.y = channel.to_pose_.getOrigin().y();
         channelMarker.points.push_back(pt);
+        pt.x = channel.to_pose_.getOrigin().x() + z2.getOrigin().x();
+        pt.y = channel.to_pose_.getOrigin().y() + z2.getOrigin().y();
+        channelMarker.points.push_back(pt);
+        pt.x = channel.to_pose_.getOrigin().x() + z.getOrigin().x();
+        pt.y = channel.to_pose_.getOrigin().y() + z.getOrigin().y();
+        channelMarker.points.push_back(pt);
         //ROS_INFO_STREAM("CHANNEL TO " << pt << " LENGTH " << channel_dist);
         std_msgs::ColorRGBA col;
-        col.r = 1.0;
+        col.r = 0.7;
         col.g = 0.0;
         col.b = 0.0;
         col.a = 1.0;
         if(channel.length() >= min_good_dist) {
             col.r = 0.0;
-            col.g = 1.0;
+            col.g = 0.7;
             col.b = 0.0;
+        }
+        if(index == best_idx) {
+            col.r = 0.0;
+            col.g = 0.0;
+            col.b = 1.0;
         }
         channelMarker.colors.push_back(col);
         channelMarker.colors.push_back(col);
+        channelMarker.colors.push_back(col);
+        channelMarker.colors.push_back(col);
+        index++;
     }
 
     return channelMarker;
@@ -380,7 +404,9 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
     // + this = fun computeChannels
 
     std::vector<DriveChannel> channels;
-    for(double da = -M_PI; da <= M_PI; da += angles::from_degrees(5.0)) {
+    int best_idx = -1;
+    double best_da = HUGE_VAL;
+    for(double da = -M_PI; da <= M_PI - angles::from_degrees(5.0); da += angles::from_degrees(5.0)) {
         tf::Pose rotDir(tf::createQuaternionFromYaw(da));
         // point in da, along up to the whole costmap length
         tf::Pose relativeTargetDir(relativeTarget.getRotation(),
@@ -391,11 +417,24 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
         DriveChannel channel = computeChannel(robot_pose, rotTarget,
                 costmap_ros_->getInscribedRadius() + 0.05);
         channels.push_back(channel);
+        if(channel.length() >= distToTarget) {   //  valid
+            //ROS_INFO("Valid channel found with da %f at %zu", da, channels.size() - 1);
+            if(fabs(da) < fabs(best_da)) {
+                best_da = da;
+                best_idx = channels.size() - 1;
+                //ROS_INFO("Better channel found with da %f at %d", best_da, best_idx);
+            }
+        }
     }
+    ROS_INFO("Best channel found with da %f at %d", best_da, best_idx);
 
     // TODO really distToTarget, what if tartget is behind corner? There should be a waypoint ;)
-    channelMarkers.markers.push_back(createChannelMarkers(channels, distToTarget));
+    channelMarkers.markers.push_back(createChannelMarkers(channels, distToTarget, best_idx));
     pub_markers_.publish(channelMarkers);
+
+    // no valid channel found -> replan global please
+    if(best_idx < 0)
+        return false;
 
     // Now: How would I use/judge channels as input interface
     // -> Read this and decide on channel fns I need.

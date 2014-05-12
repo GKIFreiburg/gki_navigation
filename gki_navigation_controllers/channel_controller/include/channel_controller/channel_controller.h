@@ -46,7 +46,8 @@ namespace channel_controller
             DriveChannel computeChannel(tf::Pose from_pose, tf::Pose to_pose, double clearance_dist) const;
 
             visualization_msgs::Marker createChannelMarkers(
-                    const std::vector<DriveChannel> & channels, double min_good_dist) const;
+                    const std::vector<DriveChannel> & channels, double min_good_dist,
+                    int best_idx) const;
 
             visualization_msgs::Marker createPoseMarker(const tf::Pose & pose,
                     double r, double g, double b,
