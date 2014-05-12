@@ -42,6 +42,7 @@
 #include <stdlib.h>
 #include <algorithm>
 #include <stdio.h>
+#include <assert.h>
 
 inline int sign(int x)
 {
@@ -126,11 +127,117 @@ inline void bresenham2D(ActionType at, unsigned int abs_da, unsigned int abs_db,
     at(cur_x, cur_y);
 }
 
+class Bresenham
+{
+    public:
+        Bresenham(int x0, int y0, int x1, int y1, unsigned int max_length = UINT_MAX)
+        {
+            cur_x_ = x0;
+            cur_y_ = y0;
+            dx = x1 - x0;
+            dy = y1 - y0;
+
+            unsigned int abs_dx = abs(dx);
+            unsigned int abs_dy = abs(dy);
+            //if x is dominant
+            if(abs_dx >= abs_dy){
+                abs_da = abs_dx;
+                abs_db = abs_dy;
+                go_x = true;
+            } else {
+                //otherwise y is dominant
+                abs_da = abs_dy;
+                abs_db = abs_dx;
+                go_x = false;
+            }
+            error_b = abs_da / 2;
+
+            i = 0;
+            //we need to chose how much to scale our dominant dimension, based on the maximum length of the line
+            double dist = sqrt((x0 - x1) * (x0 - x1) + (y0 - y1) * (y0 - y1));
+            double scale = std::min(1.0,  max_length / dist);
+            end = std::min((unsigned int)(scale * abs_da), abs_da);
+        }
+
+        bool hasNext() const {
+            return i <= end;
+        }
+
+        void advance() {
+            if(go_x) {
+                cur_x_ += sign(dx);
+            } else {
+                cur_y_ += sign(dy);
+            }
+            error_b += abs_db;
+            if((unsigned int)error_b >= abs_da){
+                if(go_x) {
+                    cur_y_ += sign(dy);
+                } else {
+                    cur_x_ += sign(dx);
+                }
+                error_b -= abs_da;
+            }
+            i++;
+        }
+
+        int cur_x() const { return cur_x_; }
+        int cur_y() const { return cur_y_; }
+
+    private:
+        unsigned int abs_da;
+        unsigned int abs_db;
+        int error_b;
+        int dx;
+        int dy;
+        bool go_x;
+        int cur_x_;
+        int cur_y_;
+        unsigned int end;
+        unsigned int i;
+};
+
+class BCheck
+{
+    public:
+        BCheck(int x0, int y0, int x1, int y1) :
+            b(x0, y0, x1, y1)
+        {
+        }
+        void operator()(int x, int y)
+        {
+            if(!b.hasNext()) {
+                printf("EXTRA CALL\n");
+                return;
+            }
+            printf("%d %d\n", x, y);
+            assert(x == b.cur_x());
+            assert(y == b.cur_y());
+            b.advance();
+        }
+
+    private:
+        Bresenham b;
+};
+
 int main(int argc, char** argv)
 {
-    raytraceLine(PrintC(), 0, 0, 10, 5);
+    raytraceLine(BCheck(0, 0, 10, 5), 0, 0, 10, 5);
+    printf("\n");
+    raytraceLine(BCheck(0, 0, 5, 10), 0, 0, 5, 10);
+    printf("\n");
+    raytraceLine(BCheck(10, 0, -5, 10), 10, 0, -5, 10);
+    printf("\n");
+    raytraceLine(BCheck(-4, -3, 3, 4), -4, -3, 3, 4);
+    printf("\n");
+    raytraceLine(BCheck(-4, -3, -2, 4), -4, -3, -2, 4);
+    printf("\n");
 
-    raytraceLine(PrintC(), 0, 0, 5, 10);
+    // 2. Cleanup, namespace, lib fn, use for channels!
+    //for(Bresenham b(0, 0, 10, 5); b.hasNext(); b.advance()) {
+    //    // ???
+    //    printf("%d %d\n", b.cur_x(), b.cur_y());
+    //}
+    //printf("%d %d\n", b.cur_x(), b.cur_y());
 
-    raytraceLine(PrintC(), 10, 0, -5, 10);
 }
