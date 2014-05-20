@@ -438,7 +438,7 @@ void ChannelController::limitTwist(geometry_msgs::Twist & cmd_vel) const
     double dx_max = max_accel_tv_ * dt;
     double dth_max = max_accel_rv_ * dt;
 
-    // TODO stopping for obstacle? -> test and increase accel limits or not limit
+    // FIXME later: stopping for obstacle? -> test and increase accel limits or not limit
     // if the channel is too short.
 
     double twist_scale = 1.0;
@@ -489,7 +489,7 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
     tf::Pose relToWp = channel.from_pose_.inverseTimes(local_plan_.front());
     double dist_to_wp = relToWp.getOrigin().length();
     double angle_to_wp = atan2(relToWp.getOrigin().y(), relToWp.getOrigin().x());
-    // TODO maybe look ahead if next waypoints are on the same channels: GO!
+    // FIXME later: maybe look ahead if next waypoints are on the same channels: GO!
 
     // channel way different, stop first, then turn in place
     if(fabs(channel_dir) > angles::from_degrees(90)) {
@@ -505,8 +505,6 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
     cmd_vel.angular.z = sign(channel_dir) * (min_rv_ + (max_rv_ - min_rv_) *
             straight_up(fabs(channel_dir), angles::from_degrees(10.0), angles::from_degrees(90.0)));
 
-    // TODO: Aufmultipl is bad -> needs to go into slow down factors.
-    // all the *= 0.1 scale badly down, should be one scaling expression
     cmd_vel.linear.x = min_tv_ + (max_tv_ - min_tv_) *
         straight_up(channel_length, 0.3, 1.0);
 
@@ -514,7 +512,7 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
     double bad_direction_tv_scale =
         straight_down(fabs(channel_dir), angles::from_degrees(10.0), angles::from_degrees(90.0));
 
-    // go slower when narrow TODO: maybe only when narrow within where we are (not at end of channel)
+    // go slower when narrow FIXME later: maybe only when narrow within where we are (not at end of channel)
     double close_to_obst_tv_scale = straight_up(channel_width, 0.5, 1.0);
 
     // for now ignore close to wp unless goal.
@@ -579,14 +577,14 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
         return false;
     }
 
-    // TODO: we should be able to skip/advance to waypoints furhter in the plan if they are reached.
+    // FIXME later: we should be able to skip/advance to waypoints furhter in the plan if they are reached.
     // No need to follow the plan backwards if we somehow got ahead towards goal - only that counts.
     while(!local_plan_.empty() && currentWaypointReached()) {
         current_waypoint_++;
         if(!localizeGlobalPlan(current_waypoint_)) {
             return false;
         }
-    } // TODO more efficient, esp for skipping: wayPOintReache(idx)
+    } // FIXME later: more efficient, esp for skipping: wayPOintReache(idx)
 
     if(local_plan_.empty()) {
         return true;    // FIXME At goal, but move_base wants us to say we did a velocity command always
@@ -597,7 +595,8 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
     }
 
     // TODO if there is no channel as our start is in obst: get out of that!
-    // Minimize channels, smaller padding, recovery behaviors
+    // Minimize channels, smaller padding, recovery behaviors - go anywhere.
+    // -> What is configured as recovery behaviors? Maybe something implemented already
 
     // TODO we must reject this if the local target is not easily reachable/too far away
 
@@ -614,6 +613,8 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
     // Compute DA from that or store?
     // + this = fun computeChannels
 
+    // TODO turn to goal seems to go only positive - normalize?
+    // TODO 2 I don't know why we even turn to goal already? Is there code that does this.
     std::vector<DriveChannel> channels;
     int best_idx = -1;
     double best_da = HUGE_VAL;
@@ -652,9 +653,7 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
 
     // DEBUG: Check channel selection and drive to channel independently.
 
-    // TODO skipping waypoints -> later
-
-    // TODO really distToTarget, what if tartget is behind corner? There should be a waypoint ;)
+    // FIXME really distToTarget, what if tartget is behind corner? There should be a waypoint ;)
     // Maybe better score like: low da, waypoint(S) - latest waypoint, distance
     channelMarkers.markers.push_back(createChannelMarkers(channels, distToTarget, best_idx));
     pub_markers_.publish(channelMarkers);
