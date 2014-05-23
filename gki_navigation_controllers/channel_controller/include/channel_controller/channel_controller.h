@@ -14,6 +14,7 @@ namespace channel_controller
             tf::Pose from_pose_;
             tf::Pose to_pose_;
             double min_dist_;      ///< min width along the whole channel
+            double da_;            ///< angle delta to next waypoint
 
             double length() const { return from_pose_.inverseTimes(to_pose_).getOrigin().length(); }
 
@@ -21,6 +22,40 @@ namespace channel_controller
 
     class ChannelController : public nav_core::BaseLocalPlanner
     {
+        public:
+            /// Simple class that reports on the current status for computeVelocityCommands.
+            class ScopedVelocityStatus
+            {
+                public:
+                    ScopedVelocityStatus(geometry_msgs::Twist & cmdVel,
+                            ros::Publisher & pubStatus, const costmap_2d::Costmap2DROS* costmap);
+                    ~ScopedVelocityStatus();
+
+                    // goal approach
+                    void setAtGoalPosStopToTurn(double angle_to_goal, double cur_tv);
+                    void setAtGoalPosTurnToGoal(double angle_to_goal, double cur_tv);
+
+                    // default channel behaviors
+                    void setChannelStopToTurn(double rel_channel_dir, double cur_tv);
+                    void setChannelTurnToChannel(double rel_channel_dir, double cur_tv);
+
+                    void setChannelFollowChannel(double rel_channel_dir,
+                            const std::string & tv_scale, const std::string & rv_scale);
+
+                    // failures/recoveries
+                    void setNoValidChannel();
+
+                private:
+                    void publishStatus();
+
+                private:
+                    geometry_msgs::Twist & cmd_vel;
+                    ros::Publisher & pub_markers;
+                    const costmap_2d::Costmap2DROS* costmap;
+
+                    std::stringstream status;
+            };
+
         public:
             ChannelController();
             virtual ~ChannelController();
@@ -46,9 +81,19 @@ namespace channel_controller
             /// Compute max length of channel in a direction angle that has guaranteed clearance_dist.
             DriveChannel computeChannel(tf::Pose from_pose, tf::Pose to_pose, double clearance_dist) const;
 
-            bool computeVelocityForChannel(const DriveChannel & channel, geometry_msgs::Twist & cmd_vel) const;
+            std::vector<DriveChannel> computeChannels(const tf::Pose & robotPose,
+                    const tf::Pose & relativeTarget) const;
+
+            /// Evaluate channels and return the index of the best one.
+            int evaluateChannels(const std::vector<DriveChannel> & channels, double distToTarget) const;
+
+            bool computeVelocityForChannel(const DriveChannel & channel, geometry_msgs::Twist & cmd_vel, ScopedVelocityStatus & status) const;
 
             void limitTwist(geometry_msgs::Twist & cmd_vel) const;
+
+            bool handleGoalApproach(geometry_msgs::Twist & cmd_vel,
+                    const tf::Stamped<tf::Pose> & robotPose, double distToTarget,
+                    ScopedVelocityStatus & status) const;
 
             visualization_msgs::Marker createChannelMarkers(
                     const std::vector<DriveChannel> & channels, double min_good_dist,
@@ -85,6 +130,7 @@ namespace channel_controller
 
             ros::Subscriber sub_odom_;
             ros::Publisher pub_markers_;
+            ros::Publisher pub_status_marker_;
             ros::Publisher pub_local_plan_;
 
             nav_msgs::Odometry last_odom_;
