@@ -311,6 +311,7 @@ bool ChannelController::localizeGlobalPlan(unsigned int start_index)
     return true;
 }
 
+
 DriveChannel ChannelController::computeChannel(tf::Pose from_pose, tf::Pose to_pose, double clearance_dist) const
 {
     ROS_ASSERT(costmap_.getSizeInCellsX() == voronoi_.getSizeX());
@@ -679,6 +680,31 @@ bool ChannelController::handleGoalTurn(geometry_msgs::Twist & cmd_vel,
     return true;
 }
 
+double ChannelController::getDistanceAtPose(const tf::Pose & pose, bool* in_bounds) const
+{
+    // determine current dist
+    int pose_x, pose_y;
+    costmap_.worldToMapNoBounds(pose.getOrigin().x(), pose.getOrigin().y(),
+            pose_x, pose_y);
+    if(pose_x < 0 || pose_y < 0 ||
+            pose_x >= (int)voronoi_.getSizeX() || pose_y >= (int)voronoi_.getSizeY()) {
+        if(in_bounds == NULL) {
+            // only warn if in_bounds isn't checked externally
+            ROS_WARN_THROTTLE(1.0, "%s: Pose out of voronoi bounds (%.2f, %.2f) = (%d, %d)", __func__,
+                    pose.getOrigin().x(), pose.getOrigin().y(), pose_x, pose_y);
+        } else {
+            *in_bounds = false;
+        }
+        return 0.0;
+    } 
+    if(in_bounds)  {
+        *in_bounds = true;
+    }
+    float dist = voronoi_.getDistance(pose_x, pose_y);
+    dist *= costmap_.getResolution();
+    return dist;
+}
+
 int ChannelController::getToSafeWaypoint(geometry_msgs::Twist & cmd_vel,
         const tf::Pose & robotPose, const tf::Pose & relativeTarget,
         ScopedVelocityStatus & status)
@@ -691,11 +717,12 @@ int ChannelController::getToSafeWaypoint(geometry_msgs::Twist & cmd_vel,
         return -1;
 
     // determine current dist
-    int robot_x, robot_y;
-    costmap_.worldToMapNoBounds(robotPose.getOrigin().x(), robotPose.getOrigin().y(),
-            robot_x, robot_y);
-    float dist = voronoi_.getDistance(robot_x, robot_y);
-    dist *= costmap_.getResolution();
+    bool pose_in_bounds;
+    double dist = getDistanceAtPose(robotPose, &pose_in_bounds);
+    if(!pose_in_bounds) {
+        ROS_ERROR("%s: Robot pose not in bounds", __func__);    // shouldn't happen
+        return -1;
+    }
 
     // stay active if activeTime < min_get_to_safe_dist_time_ or
     // we're not at safe waypoint dist
@@ -868,17 +895,15 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
         return false;
     }
 
-    // TODO local wpt in obstacle: call replanning
-    // Maybe ask for replanning more often?
-
-    // TODO if there is no channel as our start is in obst: get out of that!
-    // Minimize channels, smaller padding, recovery behaviors - go anywhere.
-    // -> What is configured as recovery behaviors? Maybe something implemented already
-    // Maybe also to get out: go to best channel that is safe (not valid = to wp)
-
-    // here we'll need to balance if we want to: a) solve it ourselves as best as we can XOR recoveries ourselves b) fail and request new c) fail and request new all time to trigger recoveries -> we should request new global from time to time, ideally without recoveries -> can put forced global replace 1s in configs!
-
-    // TODO we must reject this if the local target is not easily reachable/too far away
+    // check for local wpt in obstacle: call replanning if that happens
+    bool local_wpt_in_bounds;
+    double dist_at_next_wpt = getDistanceAtPose(local_plan_.front(), &local_wpt_in_bounds);
+    if(local_wpt_in_bounds) {   // out of bounds OK - far away - drive there first
+        if(dist_at_next_wpt <= 0.0) {
+            ROS_WARN("Next waypoint in obstacle - requesting new plan");
+            return false;
+        }
+    }
 
     visualization_msgs::MarkerArray channelMarkers;
 

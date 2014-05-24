@@ -112,6 +112,8 @@ namespace channel_controller
                     const tf::Stamped<tf::Pose> & robotPose, double distToTarget,
                     ScopedVelocityStatus & status);
 
+            double getDistanceAtPose(const tf::Pose & pose, bool* in_bounds) const;
+
             /// Execute getToSafeWaypoint behavior
             /**
              * \return 0 if not active, 1 if active, -1 if failed, -2 if suceeded.
