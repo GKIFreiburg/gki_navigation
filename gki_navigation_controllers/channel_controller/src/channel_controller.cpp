@@ -201,6 +201,11 @@ bool ChannelController::setPlan(const std::vector<geometry_msgs::PoseStamped> & 
     global_plan_ = plan;
     current_waypoint_ = 0;
     state_ = CSFollowChannel;
+    // TODO if we ever switch to continuous replans (e.g. 1s)
+    // resetting the state will reset all our fallback/approach behaviors
+    // We should detect that, e.g. by checking that the goal pose (last entry)
+    // is still the same, i.e. determine that move_base
+    // still sends us to the same thing (same problem), just another way.
 
     // localize now to verify this makes sense somehow and return upon that.
     return localizeGlobalPlan(current_waypoint_);
@@ -225,8 +230,15 @@ bool ChannelController::currentWaypointReached() const
         angleThreshold = goal_reached_angle_;
     }
 
-    if(toWaypoint.getOrigin().length() > distThreshold)
-        return false;
+    if(state_ != CSGoalTurn) {
+        // Setting state to CSGoalTurn determined that this
+        // already was true once, from then on we don't care
+        // (latched goal approach)
+        // This must not be checked in that case as CSGoalTurn
+        // only turns to goal, but never approaches again.
+        if(toWaypoint.getOrigin().length() > distThreshold)
+            return false;
+    }
     if(fabs(tf::getYaw(toWaypoint.getRotation())) > angleThreshold)
         return false;
 
@@ -633,13 +645,6 @@ bool ChannelController::handleGoalTurn(geometry_msgs::Twist & cmd_vel,
     // we are at the goal point
     // as currentWaypointReached didn't trigger: we're not turned to it
 
-    // FIXME later: latch this? Otherwise weird channel behavior forth and back.
-    // latch = remember at goal pos and stopped
-    // once that is true always handle the goal turn independent of dist
-    // -> needs to be reset on new plan or maybe then fail on too large dist
-    // TODO for now latched -> we never return to goal dist approach
-    // -> mgiht never reach goal !!!
-
     tf::Stamped<tf::Pose> currentWaypoint = local_plan_.front();
     tf::Pose toWaypoint = robotPose.inverseTimes(currentWaypoint);
 
@@ -890,9 +895,10 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
         return true;
     }
 
-    // TODO FOR NOW: MAKE BEHAVIOR HANDLING
+    // TODO FOR NOW:
     // THEN CHANNEL SELECTION IMPORVE?CHANGE for normal eval channels
     // THEN handle valid vs. safe_wpt_dist channels
+    // Then clear TODOs
     //
     // TODO Decide safe and stable behavior for this - tie in with changing evaluation to "get out of obst" only -> min valid dist for evalaution + look at DA at all must be adapted
     // Should be (with params)
