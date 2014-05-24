@@ -94,6 +94,8 @@ namespace channel_controller
             std::vector<DriveChannel> computeChannels(const tf::Pose & robotPose,
                     const tf::Pose & relativeTarget, double minDist) const;
 
+            double computeChannelScore(double da, double dist) const;
+
             /// Evaluate channels and return the index of the best one.
             int evaluateChannels(const std::vector<DriveChannel> & channels, double distToTarget) const;
 
@@ -112,7 +114,7 @@ namespace channel_controller
 
             /// Execute getToSafeWaypoint behavior
             /**
-             * \return 0 if not active, 1 if active, -1 if failed.
+             * \return 0 if not active, 1 if active, -1 if failed, -2 if suceeded.
              */
             int getToSafeWaypoint(geometry_msgs::Twist & cmd_vel,
                     const tf::Pose & robotPose, const tf::Pose & relativeTarget,

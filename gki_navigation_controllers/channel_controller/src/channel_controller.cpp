@@ -247,7 +247,7 @@ bool ChannelController::currentWaypointReached() const
 
 bool ChannelController::localizeGlobalPlan(unsigned int start_index)
 {
-    // TODO test this with different frames for map/odom
+    // FIXME test this with different frames for map/odom
     nav_msgs::Path localPlanMsg;
     localPlanMsg.header.stamp = ros::Time(0);
     localPlanMsg.header.frame_id = costmap_ros_->getGlobalFrameID();
@@ -685,8 +685,7 @@ int ChannelController::getToSafeWaypoint(geometry_msgs::Twist & cmd_vel,
             activeTime >= ros::Duration(min_get_to_safe_dist_time_)) {
         // out of obst and executed long enough -> we're done
         state_ = CSFollowChannel;
-        // TODO maybe trigger new global plan now?
-        return 0;
+        return -2;
     }
 
     // actual behavior - choose channels.
@@ -734,6 +733,27 @@ std::vector<DriveChannel> ChannelController::computeChannels(const tf::Pose & ro
     return channels;
 }
 
+double ChannelController::computeChannelScore(double da, double dist) const
+{
+    // Scoring is based on da and min_dist:
+    // small da + small dist
+    // - Score by dist and a bit da (already there keep from obst + steer)
+    // small da + large dist
+    // - Score by dist and a bit da (already there keep from obst + steer)
+    // large da + small dist
+    // - Score by da (try to get there first)
+    // large da + large dist
+    // - Score by da (try to get there first)
+    // => Make this a smooth transition
+    double da_score = 0.5 * (cos(fabs(da)) + 1.0);  // [0..1] based on cos -> 1.0 for da = 0.0
+    // keeping dist_score influence very conservative for now.
+    // A 20% wider channel gets a bit more score.
+    double dist_score = straight_up(dist, 0.0, 1.2 * safe_waypoint_channel_width_/2.0);
+                //1.0 * costmap_ros_->getInscribedRadius());
+    double score = da_score * dist_score;
+    return score;
+}
+
 int ChannelController::evaluateChannels(const std::vector<DriveChannel> & channels,
         double distToTarget) const
 {
@@ -746,20 +766,7 @@ int ChannelController::evaluateChannels(const std::vector<DriveChannel> & channe
         double dist = channel.min_dist_;
         if(channel.length() >= distToTarget) {   //  valid
             //ROS_INFO("Valid channel found with da %f at %zu", da, channels.size() - 1);
-            // Scoring is based on da and min_dist:
-            // small da + small dist
-            // - Score by dist and a bit da (already there keep from obst + steer)
-            // small da + large dist
-            // - Score by dist and a bit da (already there keep from obst + steer)
-            // large da + small dist
-            // - Score by da (try to get there first)
-            // large da + large dist
-            // - Score by da (try to get there first)
-            // => Make this a smooth transition
-            double da_score = 0.5 * (cos(fabs(da)) + 1.0);  // [0..1] based on cos -> 1.0 for da = 0.0
-            // keeping dist_score influence very conservative for now.
-            double dist_score = straight_up(dist, 0.0, 1.0 * costmap_ros_->getInscribedRadius());
-            double score = da_score * dist_score;
+            double score = computeChannelScore(da, dist);
             if(score > best_score) {
                 best_score = score;
                 best_idx = channel_idx;
@@ -767,27 +774,22 @@ int ChannelController::evaluateChannels(const std::vector<DriveChannel> & channe
             }
         }
     }
-    // Channel selection: Everything that is long enough to reach a waypoint ahead
-    // free dist at waypoint should be >= dist along channel length to wpt (i.e. no split path)
-    //
-    // Maybe split this between: Drivable/safe channels and channels that have goal in reach
-    // Then select from goal channels - warn if only drivable left (shouldnt need to turn to much)
-    // -> sleect channel based on da + width/length --> SCORE
-    // -> Maybe channels should have distToWp and da as vars?
-    // -> small da waaay important when small distToTarget
-    // -> with larget distToTarget da small-ish -> look at width, da large-ish look at da
-    // -> Usually prefer large width channels
-    // --> if aiming correctly free dist, otherwise aim for da.
+    if(best_idx < 0) {
+        ROS_WARN("No valid channel found - trying channels at half distToTarget");
+        for(unsigned int channel_idx = 0; channel_idx < channels.size(); channel_idx++) {
+            const DriveChannel & channel = channels.at(channel_idx);
+            double da = channel.da_;
+            double dist = channel.min_dist_;
+            if(channel.length() >= 0.5 * distToTarget) {   //  valid
+                double score = computeChannelScore(da, dist);
+                if(score > best_score) {
+                    best_score = score;
+                    best_idx = channel_idx;
+                }
+            }
+        }
+    }
 
-    // DEBUG: Check channel selection and drive to channel independently.
-
-    // FIXME really distToTarget, what if tartget is behind corner? There should be a waypoint ;)
-    // Maybe better score like: low da, waypoint(S) - latest waypoint, distance
-
-    // TODO maight also need some: get safe channels (to get out of obst), even if not towards waypoint
-    // And even: get best unsafe channel - if there are no safe ones.
-
-    // TODO channel oscillation appearing, disappearing for best dir channel in close stiutations - best solutioN???
     return best_idx;
 }
 
@@ -883,6 +885,9 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
         ROS_ERROR("getToSafeWaypoint failed.");
         velStatus.setNoSafeChannel();
         return false;
+    } else if(getting_to_safe_wpt == -2) {
+        ROS_INFO("getToSafeWaypoint succeeded - querying new global plan.");
+        return false;
     }
 
     std::vector<DriveChannel> channels = computeChannels(robot_pose, relativeTarget,
@@ -895,39 +900,12 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
         return true;
     }
 
-    // TODO FOR NOW:
-    // THEN CHANNEL SELECTION IMPORVE?CHANGE for normal eval channels
-    // THEN handle valid vs. safe_wpt_dist channels
-    // Then clear TODOs
-    //
-    // TODO Decide safe and stable behavior for this - tie in with changing evaluation to "get out of obst" only -> min valid dist for evalaution + look at DA at all must be adapted
-    // Should be (with params)
-    // 1. Try to find best acceptable safe channel
-    // 2. Try to find best OK to goal/wpt channel
-    // --> danger is that we osciallate between getting to wpt and the best being turn around!!!
-    // -> Check if eval best goes to wpts
-    // 3. Try to find best safe out of obstacle
-    // 4. Try to kinda OK get out of obstacle
-    // 5. All within minimal safety distances for steering, if not: FAIL
-    // 6. If too many failures replan or recover -> TODO what first?
-    // Maybe replan earlier if WPT too close to obstacle or something like that -> no cycles please...
-    //
-    // TODO also judge if safe_waypoint_channel_width_ actually gets to waypoint???
-    // get out until time or at safe_waypoint_channel_width_ + x?
-    //
-    // Ideal behavior:
-    // we follow plan along nicely/safely, but directed (see above)
-    // if we get us too close to obstacle -> get out, keep following
-    // if plan is too close to obstacle -> replan before we are in there (look ahead where WPT leads us?)
-    // if we followed plan into obstacle -> 1. get out, 2. replan
-
     int best_idx = evaluateChannels(channels, distToTarget);
 
     channelMarkers.markers.push_back(createChannelMarkers(channels, distToTarget, best_idx));
     pub_markers_.publish(channelMarkers);
 
     // no valid channel found -> replan global please
-    // TODO valid vs best (non valid)
     if(best_idx < 0) {
         ROS_WARN_THROTTLE(0.5, "No valid channel found.");
         velStatus.setNoValidChannel();
@@ -946,59 +924,6 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
     last_cmd_vel_time_ = ros::Time::now();
     return foundChannelCmd;
 }
-
-/*
-Now: How would I use/judge channels as input interface
--> Read this and decide on channel fns I need.
--> discuss and Do/impl
--> visualize all
-
-Primary channel:
-- Drive to waypoint directly
-- Free at least until waypoint (more unnec?)
-- if not: Take free channel with least angle diff to wpt
--> how long must that be? Or mix angle to wpt + dist?
-- chan must reach wpt, if too short: problem.
-- what if too short, but still has some length? GO there or use side-channel?
--> Problem with wide-spreach wpts around corner.
-
-Secondary channel:
-    - must "reach" same waypoint (how defined with not-straight-to-wp channels?) as primary
-    - "reach" = dist to target wpt at end must be free dist (i.e. dont have obstacle in between), no "other" channel/gap
-    - shouldnt divert too much (dont drive backwards, because there its free)
-    - judges: more free space to sides, longer (after waypoint?)
-    - judge channel width (not min clearnec)
-
-
-if no good channel to next nicely distant waypoint: return false for new global plan
-maybe we'd be OK if we can't reach the next waypoint, but a later on and manually skip the in between ones
-What is our next target waypoint? Do we need something different than the
-waypoint_reached_dist that adcanves waypoints OR is this the same logic/idea?
-Does it make sense to "not have reached" a locally near waypoint, but
-still aim for ones thats further away?
-
-- adjust params to allow replanning
-- we shuold at some point say that we cant computeVelocityCommands
-if the global plan/next local plan waypoint is too far away from us and its not easily reachable
-
-Now: Compute all minimal-width channels (w/ padding, etc.) and display them.
-
-Define what a channel is
-- local/min channel with braking? - Start simple, but extensible
-- the max channel that steers towards min channel and will basically expand around min channel
- to speed up if poss -> but always guarantee min channel reachable if poss
-
- Main goal: everything reachable with braking/slowest speed is something that we can reach (if slowly)
- Secondary: If there is connected space around our min channel we speed up
- Ternary: Maybe drive a "bend" around the min channel (e.g. farther away from wall) to get more speed even if we leave the min channel
-
- Define what makes a min/max channel parameter-wise -> What is input, what is output param of channel?
-Then impl and display the channel computations.
-
-Must judge the "best" channels given those impls.
-Finally - derive control comamnds for driving to channel.
-*/
-
 
 
 ChannelController::ScopedVelocityStatus::ScopedVelocityStatus(geometry_msgs::Twist & cmdVel,
