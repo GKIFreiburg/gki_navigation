@@ -549,7 +549,7 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
     // FIXME later: maybe look ahead if next waypoints are on the same channels: GO!
 
     // channel way different, stop first, then turn in place
-    if(fabs(channel_dir) > angles::from_degrees(60)) {
+    if(fabs(channel_dir) > angles::from_degrees(45)) {
         double cur_tv = last_odom_.twist.twist.linear.x;
         //double cur_rv = last_odom_.twist.twist.angular.z;
         if(fabs(cur_tv) < stopped_tv_) {
@@ -565,20 +565,20 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
 
     // kinda steer towards channel
     cmd_vel.angular.z = sign(channel_dir) * (min_rv_ + (max_rv_ - min_rv_) *
-            straight_up(fabs(channel_dir), angles::from_degrees(10.0), angles::from_degrees(90.0)));
+            straight_up(fabs(channel_dir), angles::from_degrees(0.0), angles::from_degrees(60.0)));
 
     // FIXME later use width as main scaling? relate to robot?
 
     // speed up if there is space
     cmd_vel.linear.x = min_tv_ + (max_tv_ - min_tv_) *
-        straight_up(channel_length, 0.3, 1.0);
+        straight_up(channel_length, 0.3, 2.0);
 
     // go slower forward if we aren't pointing in the right direction
     double bad_direction_tv_scale =
-        straight_down(fabs(channel_dir), angles::from_degrees(10.0), angles::from_degrees(90.0));
+        straight_down(fabs(channel_dir), angles::from_degrees(5.0), angles::from_degrees(60.0));
 
     // go slower when narrow FIXME later: maybe only when narrow within where we are (not at end of channel)
-    double channel_width_tv_scale = straight_up(channel_width, 0.5, 1.0);
+    double channel_width_tv_scale = straight_up(channel_width, 0.4, 1.0);
 
     // for now ignore close to wp unless goal.
     double close_to_goal_tv_scale = 1.0;
@@ -801,7 +801,7 @@ double ChannelController::computeChannelScore(double da, double dist) const
     double da_score = 0.5 * (cos(fabs(da)) + 1.0);  // [0..1] based on cos -> 1.0 for da = 0.0
     // keeping dist_score influence very conservative for now.
     // A 20% wider channel gets a bit more score.
-    double dist_score = straight_up(dist, 0.0, 1.2 * safe_waypoint_channel_width_/2.0);
+    double dist_score = straight_up(dist, safe_channel_width_/2.0, 1.2 * safe_waypoint_channel_width_/2.0);
                 //1.0 * costmap_ros_->getInscribedRadius());
     double score = da_score * dist_score;
     return score;
@@ -1066,7 +1066,7 @@ void ChannelController::ScopedVelocityStatus::publishStatus()
     statusMarker.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
     statusMarker.action = visualization_msgs::Marker::ADD;
     statusMarker.text = status.str();
-    statusMarker.scale.z = 0.15;
+    statusMarker.scale.z = 0.25;
     // put status marker near robot
     tf::Stamped<tf::Pose> robot_pose;
     if(!costmap->getRobotPose(robot_pose)) {
