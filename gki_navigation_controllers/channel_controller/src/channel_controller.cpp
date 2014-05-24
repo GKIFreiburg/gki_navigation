@@ -198,14 +198,32 @@ bool ChannelController::isGoalReached()
 
 bool ChannelController::setPlan(const std::vector<geometry_msgs::PoseStamped> & plan)
 {
+    // check if the new plan has the same goal
+    bool sameGoal = false;
+    if(!global_plan_.empty() && !plan.empty()) {
+        geometry_msgs::PoseStamped currentGoal = global_plan_.back();
+        geometry_msgs::PoseStamped newGoal = plan.back();
+        if(currentGoal.header.frame_id == newGoal.header.frame_id) {    // ignore time for fixed frames
+            tf::Pose currentGoalPose;
+            tf::Pose newGoalPose;
+            tf::poseMsgToTF(currentGoal.pose, currentGoalPose);
+            tf::poseMsgToTF(newGoal.pose, newGoalPose);
+            tf::Pose relPose = currentGoalPose.inverseTimes(newGoalPose);
+            if(relPose.getOrigin().length() < 0.05 &&
+                    fabs(tf::getYaw(relPose.getRotation())) < angles::from_degrees(5.0)) {
+                sameGoal = true;
+            }
+        }
+    }
+
     global_plan_ = plan;
     current_waypoint_ = 0;
-    state_ = CSFollowChannel;
-    // TODO if we ever switch to continuous replans (e.g. 1s)
-    // resetting the state will reset all our fallback/approach behaviors
-    // We should detect that, e.g. by checking that the goal pose (last entry)
-    // is still the same, i.e. determine that move_base
-    // still sends us to the same thing (same problem), just another way.
+    if(sameGoal && state_ == CSGetToSafeWaypointDist) {
+        ROS_WARN("New plan for same goal - keeping state CSGetToSafeWaypointDist");
+        state_ = CSGetToSafeWaypointDist;
+    } else {
+        state_ = CSFollowChannel;
+    }
 
     // localize now to verify this makes sense somehow and return upon that.
     return localizeGlobalPlan(current_waypoint_);
