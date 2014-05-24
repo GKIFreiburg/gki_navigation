@@ -23,7 +23,15 @@ namespace channel_controller
     class ChannelController : public nav_core::BaseLocalPlanner
     {
         public:
+            enum ChannelControllerState
+            {
+                CSFollowChannel,
+                CSGoalTurn,
+                CSGetToSafeWaypointDist,
+            };
+
             /// Simple class that reports on the current status for computeVelocityCommands.
+            // TODO also via LEDs, beeps, etc.
             class ScopedVelocityStatus
             {
                 public:
@@ -43,7 +51,9 @@ namespace channel_controller
                             const std::string & tv_scale, const std::string & rv_scale);
 
                     // failures/recoveries
+                    void setNoSafeChannel();
                     void setNoValidChannel();
+                    void setGetToSafeWaypoint(double cur_dist, double active_time);
 
                 private:
                     void publishStatus();
@@ -82,18 +92,31 @@ namespace channel_controller
             DriveChannel computeChannel(tf::Pose from_pose, tf::Pose to_pose, double clearance_dist) const;
 
             std::vector<DriveChannel> computeChannels(const tf::Pose & robotPose,
-                    const tf::Pose & relativeTarget) const;
+                    const tf::Pose & relativeTarget, double minDist) const;
 
             /// Evaluate channels and return the index of the best one.
             int evaluateChannels(const std::vector<DriveChannel> & channels, double distToTarget) const;
 
+            /// Find the safest channel independent of target.
+            int evaluateSafeChannels(const std::vector<DriveChannel> & channels) const;
+
             bool computeVelocityForChannel(const DriveChannel & channel, geometry_msgs::Twist & cmd_vel, ScopedVelocityStatus & status) const;
+
+            void computeVelocityForSafeChannel(const DriveChannel & channel, geometry_msgs::Twist & cmd_vel, ScopedVelocityStatus & status) const;
 
             void limitTwist(geometry_msgs::Twist & cmd_vel) const;
 
-            bool handleGoalApproach(geometry_msgs::Twist & cmd_vel,
+            bool handleGoalTurn(geometry_msgs::Twist & cmd_vel,
                     const tf::Stamped<tf::Pose> & robotPose, double distToTarget,
-                    ScopedVelocityStatus & status) const;
+                    ScopedVelocityStatus & status);
+
+            /// Execute getToSafeWaypoint behavior
+            /**
+             * \return 0 if not active, 1 if active, -1 if failed.
+             */
+            int getToSafeWaypoint(geometry_msgs::Twist & cmd_vel,
+                    const tf::Pose & robotPose, const tf::Pose & relativeTarget,
+                    ScopedVelocityStatus & status);
 
             visualization_msgs::Marker createChannelMarkers(
                     const std::vector<DriveChannel> & channels, double min_good_dist,
@@ -137,7 +160,29 @@ namespace channel_controller
 
             ros::Time last_cmd_vel_time_;   ///< last time we send a command
 
+            ros::Time get_to_safe_waypoint_start_time_;
+
+            enum ChannelControllerState state_;
+
             // Controller Parameters
+
+            /// Minimum channel width that is allowed to steer to a waypoint
+            /** 
+             * If no safe_waypoint_channel_width channel is available 
+             * the best channel with safe_channel_width will be chosen 
+             * to get out of an obstacle. If none is available we'll fail
+             * and fallback to recoveries.
+             * If we're below safe_waypoint_channel_width and find channels with safe_channel_width
+             * go there for at least min_get_to_safe_dist_time_. Keep going until 
+             * max_get_to_safe_dist_time_ or until we are at safe_waypoint_channel_width.
+             * If we get to max_get_to_safe_dist_time_ we need recoveries.
+             */
+            double safe_waypoint_channel_width_;
+            /// Minimum channel width that is allowed at all
+            double safe_channel_width_;
+
+            double min_get_to_safe_dist_time_;
+            double max_get_to_safe_dist_time_;
 
             /// Waypoints within this are considered reached (unless goal wpt)
             double waypoint_reached_dist_;
