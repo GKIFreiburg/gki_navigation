@@ -25,18 +25,20 @@ namespace channel_controller
         public:
             enum ChannelControllerState
             {
+                CSNone,
                 CSFollowChannel,
                 CSGoalTurn,
                 CSGetToSafeWaypointDist,
             };
 
             /// Simple class that reports on the current status for computeVelocityCommands.
-            // TODO also via LEDs, beeps, etc.
             class ScopedVelocityStatus
             {
                 public:
                     ScopedVelocityStatus(geometry_msgs::Twist & cmdVel,
-                            ros::Publisher & pubStatus, const costmap_2d::Costmap2DROS* costmap);
+                            ros::Publisher & pubStatus,
+                            ros::Publisher & pubSound, ros::Publisher & pubLED,
+                            const costmap_2d::Costmap2DROS* costmap);
                     ~ScopedVelocityStatus();
 
                     // goal approach
@@ -61,7 +63,11 @@ namespace channel_controller
                 private:
                     geometry_msgs::Twist & cmd_vel;
                     ros::Publisher & pub_markers;
+                    ros::Publisher & pub_sound;
+                    ros::Publisher & pub_led;
                     const costmap_2d::Costmap2DROS* costmap;
+
+                    enum ChannelControllerState state;
 
                     std::stringstream status;
             };
@@ -159,6 +165,8 @@ namespace channel_controller
             ros::Publisher pub_markers_;
             ros::Publisher pub_status_marker_;
             ros::Publisher pub_local_plan_;
+            ros::Publisher pub_sound_;
+            ros::Publisher pub_led_;
 
             nav_msgs::Odometry last_odom_;
 
@@ -204,7 +212,7 @@ namespace channel_controller
             double stopped_tv_;     ///< Trans vel smaller than this - consider stopped
             double stopped_rv_;     ///< Rot vel smaller than this - consider stopped
 
-            // TODO limit this somewhere, but also consider braking for obstacles hard!
+            // FIXME later: limit this somewhere, but also consider braking for obstacles hard!
             double max_accel_tv_;   ///< Max change in tv per second
             double max_accel_rv_;   ///< Max change in rv per second
 

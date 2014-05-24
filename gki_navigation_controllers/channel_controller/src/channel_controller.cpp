@@ -5,6 +5,8 @@
 #include <nav_msgs/Path.h>
 #include <angles/angles.h>
 #include <visualization_msgs/MarkerArray.h>
+#include <kobuki_msgs/Sound.h>
+#include <kobuki_msgs/Led.h>
 #include <boost/foreach.hpp>
 #define forEach BOOST_FOREACH
 
@@ -91,6 +93,9 @@ void ChannelController::initialize(std::string name,
     pub_markers_ = nhPriv.advertise<visualization_msgs::MarkerArray>("channel_markers", 1);
     pub_status_marker_ = nhPriv.advertise<visualization_msgs::Marker>("drive_channel_status", 1);
     pub_local_plan_ = nhPriv.advertise<nav_msgs::Path>("local_plan", 1);
+
+    pub_sound_ = nh.advertise<kobuki_msgs::Sound>("mobile_base/commands/sound", 1);
+    pub_led_ = nh.advertise<kobuki_msgs::Led>("mobile_base/commands/led1", 1);
 
     sub_odom_ = nh.subscribe("odom", 1, &ChannelController::odometryCallback, this);
 
@@ -188,6 +193,9 @@ bool ChannelController::isGoalReached()
     if(current_waypoint_ >= global_plan_.size() &&
             fabs(cur_tv) < stopped_tv_ && fabs(cur_rv) < stopped_rv_) {
         ROS_INFO("ChannelController: Goal Reached!");
+        kobuki_msgs::Sound sound;
+        sound.value = kobuki_msgs::Sound::CLEANINGEND;
+        pub_sound_.publish(sound);
         return true;
     } else {
         //ROS_INFO("Not at goal. At wp %d/%zu vel %f %f", current_waypoint_, global_plan_.size(),
@@ -864,7 +872,7 @@ int ChannelController::evaluateSafeChannels(const std::vector<DriveChannel> & ch
 bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
 {
     cmd_vel = geometry_msgs::Twist();   // init to 0
-    ScopedVelocityStatus velStatus(cmd_vel, pub_status_marker_, costmap_ros_);
+    ScopedVelocityStatus velStatus(cmd_vel, pub_status_marker_, pub_sound_, pub_led_, costmap_ros_);
 
     // True if a valid velocity command was found, false otherwise
     updateVoronoi();
@@ -970,9 +978,12 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
 
 
 ChannelController::ScopedVelocityStatus::ScopedVelocityStatus(geometry_msgs::Twist & cmdVel,
-        ros::Publisher & pubMarkers, const costmap_2d::Costmap2DROS* costmap) : cmd_vel(cmdVel), pub_markers(pubMarkers), costmap(costmap)
+        ros::Publisher & pubMarkers, ros::Publisher & pubSound, ros::Publisher & pubLED,
+        const costmap_2d::Costmap2DROS* costmap) :
+    cmd_vel(cmdVel), pub_markers(pubMarkers), pub_sound(pubSound), pub_led(pubLED), costmap(costmap)
 {
     status << std::setprecision(2) << std::fixed;
+    state = CSNone;
 }
 
 ChannelController::ScopedVelocityStatus::~ScopedVelocityStatus()
@@ -985,6 +996,7 @@ void ChannelController::ScopedVelocityStatus::setAtGoalPosStopToTurn(double angl
     status << "At Goal Pos" << std::endl <<
         "-> Stop to turn" << std::endl <<
         "Angle: " << angle_to_goal << " Cur TV: " << cur_tv << std::endl;
+    state = CSGoalTurn;
 }
 
 void ChannelController::ScopedVelocityStatus::setAtGoalPosTurnToGoal(double angle_to_goal, double cur_tv)
@@ -992,6 +1004,7 @@ void ChannelController::ScopedVelocityStatus::setAtGoalPosTurnToGoal(double angl
     status << "At Goal Pos" << std::endl <<
         "-> Turn to goal" << std::endl <<
         "Angle: " << angle_to_goal << " Cur TV: " << cur_tv << std::endl;
+    state = CSGoalTurn;
 }
 
 void ChannelController::ScopedVelocityStatus::setChannelStopToTurn(double rel_channel_dir, double cur_tv)
@@ -999,6 +1012,7 @@ void ChannelController::ScopedVelocityStatus::setChannelStopToTurn(double rel_ch
     status << "Follow Channel" << std::endl <<
         "-> Stop to turn" << std::endl <<
         "Angle: " << rel_channel_dir << " Cur TV: " << cur_tv << std::endl;
+    state = CSFollowChannel;
 }
 
 void ChannelController::ScopedVelocityStatus::setChannelTurnToChannel(double rel_channel_dir, double cur_tv)
@@ -1006,6 +1020,7 @@ void ChannelController::ScopedVelocityStatus::setChannelTurnToChannel(double rel
     status << "Follow Channel" << std::endl <<
         "-> Turn to channel" << std::endl <<
         "Angle: " << rel_channel_dir << " Cur TV: " << cur_tv << std::endl;
+    state = CSFollowChannel;
 }
 
 void ChannelController::ScopedVelocityStatus::setChannelFollowChannel(double rel_channel_dir,
@@ -1015,16 +1030,19 @@ void ChannelController::ScopedVelocityStatus::setChannelFollowChannel(double rel
         "Angle: " << rel_channel_dir << std::endl <<
         "TV limited: " << tv_scale << std::endl <<
         "RV limited: " << rv_scale << std::endl;
+    state = CSFollowChannel;
 }
 
 void ChannelController::ScopedVelocityStatus::setNoValidChannel()
 {
     status << "No valid channel" << std::endl;
+    state = CSNone;
 }
 
 void ChannelController::ScopedVelocityStatus::setNoSafeChannel()
 {
     status << "No safe channel" << std::endl;
+    state = CSNone;
 }
 
 void ChannelController::ScopedVelocityStatus::setGetToSafeWaypoint(double cur_dist, double active_time)
@@ -1032,6 +1050,7 @@ void ChannelController::ScopedVelocityStatus::setGetToSafeWaypoint(double cur_di
     status << "Get To Safe WPT" << std::endl <<
         "Cur Safe Dist: " << cur_dist << std::endl <<
         "Active for: " << active_time << " s" << std::endl;
+    state = CSGetToSafeWaypointDist;
 }
 
 void ChannelController::ScopedVelocityStatus::publishStatus()
@@ -1064,6 +1083,33 @@ void ChannelController::ScopedVelocityStatus::publishStatus()
     statusMarker.frame_locked = false;
 
     pub_markers.publish(statusMarker);
+
+    kobuki_msgs::Led led;
+    if(cmd_vel.linear.x == 0 && cmd_vel.angular.z == 0) {   // for some reason we're stopping
+        led.value = kobuki_msgs::Led::BLACK;
+    } else if(state == CSFollowChannel) {
+        led.value = kobuki_msgs::Led::GREEN;
+    } else if(state == CSGoalTurn) {
+        led.value = kobuki_msgs::Led::ORANGE;
+    } else if(state == CSGetToSafeWaypointDist) {
+        led.value = kobuki_msgs::Led::RED;
+    }
+    pub_led.publish(led);
+
+    static ros::Time last_sound_time = ros::Time(0);
+    if(ros::Time::now() - last_sound_time > ros::Duration(1.0)) {
+        kobuki_msgs::Sound sound;
+        sound.value = 0;
+        if(state == CSGetToSafeWaypointDist) {
+            sound.value = kobuki_msgs::Sound::RECHARGE;
+        } else if(state == CSGoalTurn) {
+            sound.value = kobuki_msgs::Sound::BUTTON;
+        }
+        if(sound.value > 0) {
+            pub_sound.publish(sound);
+            last_sound_time = ros::Time::now();
+        }
+    }
 }
 
 }
