@@ -17,6 +17,11 @@ namespace channel_controller
             double da_;            ///< angle delta to next waypoint
 
             double length() const { return from_pose_.inverseTimes(to_pose_).getOrigin().length(); }
+            double direction() const {
+                tf::Pose relPose = from_pose_.inverseTimes(to_pose_);
+                double channel_dir = atan2(relPose.getOrigin().y(), relPose.getOrigin().x());
+                return channel_dir;
+            }
 
     };
 
@@ -29,6 +34,12 @@ namespace channel_controller
                 CSFollowChannel,
                 CSGoalTurn,
                 CSGetToSafeWaypointDist,
+            };
+            enum SafeWaypointState {
+                SWSNone,
+                SWSBestChannel,
+                SWSBestBackwardsChannelTurnIn,
+                SWSBestBackwardsChannelTurnOut,
             };
 
             /// Simple class that reports on the current status for computeVelocityCommands.
@@ -55,7 +66,7 @@ namespace channel_controller
                     // failures/recoveries
                     void setNoSafeChannel();
                     void setNoValidChannel();
-                    void setGetToSafeWaypoint(double cur_dist, double active_time);
+                    void setGetToSafeWaypoint(double cur_dist, double active_time, enum SafeWaypointState safe_waypoint_state);
 
                 private:
                     void publishStatus();
@@ -68,6 +79,7 @@ namespace channel_controller
                     const costmap_2d::Costmap2DROS* costmap;
 
                     enum ChannelControllerState state;
+                    enum SafeWaypointState safe_waypoint_state;
 
                     std::stringstream status;
             };
@@ -106,11 +118,11 @@ namespace channel_controller
             int evaluateChannels(const std::vector<DriveChannel> & channels, double distToTarget) const;
 
             /// Find the safest channel independent of target.
-            int evaluateSafeChannels(const std::vector<DriveChannel> & channels) const;
+            int evaluateSafeChannels(const std::vector<DriveChannel> & channels, bool onlyBackwards) const;
 
             bool computeVelocityForChannel(const DriveChannel & channel, geometry_msgs::Twist & cmd_vel, ScopedVelocityStatus & status) const;
 
-            void computeVelocityForSafeChannel(const DriveChannel & channel, geometry_msgs::Twist & cmd_vel, ScopedVelocityStatus & status) const;
+            void computeVelocityForSafeChannel(const DriveChannel & channel, geometry_msgs::Twist & cmd_vel, ScopedVelocityStatus & status, bool turn_in) const;
 
             void limitTwist(geometry_msgs::Twist & cmd_vel) const;
 
@@ -175,6 +187,7 @@ namespace channel_controller
             ros::Time get_to_safe_waypoint_start_time_;
 
             enum ChannelControllerState state_;
+            enum SafeWaypointState safe_waypoint_state_;
 
             // Controller Parameters
 

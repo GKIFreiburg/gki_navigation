@@ -30,6 +30,7 @@ void ChannelController::initialize(std::string name,
     costmap_ros_ = costmap_ros;
 
     state_ = CSFollowChannel;
+    safe_waypoint_state_ = SWSNone;
 
     voronoi_.initializeEmpty(costmap_ros_->getSizeInCellsX(),
             costmap_ros_->getSizeInCellsY(), true);
@@ -100,6 +101,8 @@ void ChannelController::initialize(std::string name,
     sub_odom_ = nh.subscribe("odom", 1, &ChannelController::odometryCallback, this);
 
     updateVoronoi();
+
+    srand48(time(NULL));
 }
 
 void ChannelController::updateVoronoi()
@@ -383,8 +386,7 @@ visualization_msgs::Marker ChannelController::createChannelMarkers(
     int index = 0;
     forEach(const DriveChannel & channel, channels) {
         // rotation of 90 for half of width and the end to show width
-        tf::Pose channelDelta = channel.from_pose_.inverseTimes(channel.to_pose_);
-        double dir = atan2(channelDelta.getOrigin().y(), channelDelta.getOrigin().x());
+        double dir = channel.direction();
         tf::Vector3 half_width(0.0, channel.min_dist_, 0.0);
         tf::Vector3 half_width_other(0.0, -channel.min_dist_, 0.0);
         tf::Pose side_offset(tf::createQuaternionFromYaw(0.0), half_width);
@@ -539,9 +541,8 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
     ROS_ASSERT(!local_plan_.empty());
     cmd_vel = geometry_msgs::Twist();   // init to 0
 
-    tf::Pose relPose = channel.from_pose_.inverseTimes(channel.to_pose_);
-    double channel_dir = atan2(relPose.getOrigin().y(), relPose.getOrigin().x());
-    double channel_length = relPose.getOrigin().length();
+    double channel_dir = channel.direction();
+    double channel_length = channel.length();
     double channel_width = 2.0 * channel.min_dist_;
 
     // the channel should have originated at robot_pose
@@ -628,13 +629,14 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
     return true;
 }
 
-void ChannelController::computeVelocityForSafeChannel(const DriveChannel & channel,
-        geometry_msgs::Twist & cmd_vel, ScopedVelocityStatus & status) const
+void ChannelController::computeVelocityForSafeChannel(
+        const DriveChannel & channel,
+        geometry_msgs::Twist & cmd_vel, ScopedVelocityStatus & status,
+        bool turn_in) const
 {
     cmd_vel = geometry_msgs::Twist();   // init to 0
 
-    tf::Pose relPose = channel.from_pose_.inverseTimes(channel.to_pose_);
-    double channel_dir = atan2(relPose.getOrigin().y(), relPose.getOrigin().x());
+    double channel_dir = channel.direction();
 
     bool backwards = false;
     // check if channel is behind us - go backwards
@@ -645,6 +647,8 @@ void ChannelController::computeVelocityForSafeChannel(const DriveChannel & chann
         // switch dir as we're going backwards
         channel_dir *= -1.0;
     }
+    if(!turn_in)
+        channel_dir *= -1.0;
 
     cmd_vel.linear.x = min_tv_;
     if(backwards)
@@ -749,7 +753,12 @@ int ChannelController::getToSafeWaypoint(geometry_msgs::Twist & cmd_vel,
         return -1;
     }
 
-    int best_idx = evaluateSafeChannels(safe_channels);
+    int best_idx = -1;
+    if(safe_waypoint_state_ == SWSBestChannel)
+        best_idx = evaluateSafeChannels(safe_channels, false);
+    else if(safe_waypoint_state_ == SWSBestBackwardsChannelTurnIn ||
+            safe_waypoint_state_ == SWSBestBackwardsChannelTurnOut)
+        best_idx = evaluateSafeChannels(safe_channels, true);
     if(best_idx < 0) {
         ROS_ERROR("Could not find best safe channel");
         return -1;
@@ -759,9 +768,13 @@ int ChannelController::getToSafeWaypoint(geometry_msgs::Twist & cmd_vel,
     channelMarkers.markers.push_back(createChannelMarkers(safe_channels, 0.0, best_idx));
     pub_markers_.publish(channelMarkers);
 
-    computeVelocityForSafeChannel(safe_channels[best_idx], cmd_vel, status);
+    if(safe_waypoint_state_ == SWSBestChannel ||
+            safe_waypoint_state_ == SWSBestBackwardsChannelTurnIn)
+        computeVelocityForSafeChannel(safe_channels[best_idx], cmd_vel, status, true);
+    else if(safe_waypoint_state_ == SWSBestBackwardsChannelTurnOut)
+        computeVelocityForSafeChannel(safe_channels[best_idx], cmd_vel, status, false);
 
-    status.setGetToSafeWaypoint(dist, activeTime.toSec());
+    status.setGetToSafeWaypoint(dist, activeTime.toSec(), safe_waypoint_state_);
 
     return 1;
 }
@@ -846,14 +859,19 @@ int ChannelController::evaluateChannels(const std::vector<DriveChannel> & channe
     return best_idx;
 }
 
-int ChannelController::evaluateSafeChannels(const std::vector<DriveChannel> & channels) const
+int ChannelController::evaluateSafeChannels(const std::vector<DriveChannel> & channels, bool onlyBackwards) const
 {
     int best_idx = -1;
     double best_score = -1.0;
     for(unsigned int channel_idx = 0; channel_idx < channels.size(); channel_idx++) {
         const DriveChannel & channel = channels.at(channel_idx);
+        double dir = channel.direction();
         double dist = channel.min_dist_;
         double length = channel.length();
+        if(onlyBackwards) {
+            if(fabs(dir) < angles::from_degrees(90))
+                continue;
+        }
         // Scoring is based on dist and length
         // Last term is added to decide between equal channels
         double score = straight_up(dist, safe_channel_width_/2.0, safe_channel_width_) +
@@ -946,6 +964,13 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
     if(channels.size() == 0) {
         ROS_WARN("No safe_waypoint_channel_width channels found - switching to CSGetToSafeWaypointDist");
         state_ = CSGetToSafeWaypointDist;
+        double prob = drand48();
+        if(prob < 0.35)
+            safe_waypoint_state_ = SWSBestBackwardsChannelTurnIn;
+        else if(prob < 0.7)
+            safe_waypoint_state_ = SWSBestBackwardsChannelTurnOut;
+        else
+            safe_waypoint_state_ = SWSBestChannel;
         get_to_safe_waypoint_start_time_ = ros::Time::now();
         // just enable behavior here, next iteration will execute.
         return true;
@@ -1045,12 +1070,27 @@ void ChannelController::ScopedVelocityStatus::setNoSafeChannel()
     state = CSNone;
 }
 
-void ChannelController::ScopedVelocityStatus::setGetToSafeWaypoint(double cur_dist, double active_time)
+void ChannelController::ScopedVelocityStatus::setGetToSafeWaypoint(double cur_dist, double active_time, enum SafeWaypointState safe_waypoint_st)
 {
-    status << "Get To Safe WPT" << std::endl <<
-        "Cur Safe Dist: " << cur_dist << std::endl <<
+    status << "Get To Safe WPT" << std::endl;
+    switch(safe_waypoint_st) {
+        case SWSBestChannel:
+            status << "-> Best Channel" << std::endl;
+            break;
+        case SWSBestBackwardsChannelTurnIn:
+            status << "-> Best Backwards In" << std::endl;
+            break;
+        case SWSBestBackwardsChannelTurnOut:
+            status << "-> Best Backwards Out" << std::endl;
+            break;
+        default:
+            status << "-> ERROR undefined: " << safe_waypoint_st << std::endl;
+            break;
+    }
+    status << "Cur Safe Dist: " << cur_dist << std::endl <<
         "Active for: " << active_time << " s" << std::endl;
     state = CSGetToSafeWaypointDist;
+    safe_waypoint_state = safe_waypoint_st;
 }
 
 void ChannelController::ScopedVelocityStatus::publishStatus()
