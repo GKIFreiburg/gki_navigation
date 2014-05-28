@@ -529,7 +529,7 @@ void ChannelController::limitTwist(geometry_msgs::Twist & cmd_vel) const
         //    if(fabs(new_cmd_vel.angular.z) < min_rv_)
         //        new_cmd_vel.angular.z = sign(cmd_vel.angular.z) * min_rv_;
         //}
-        ROS_INFO("%s: Scaling cmd vel from %f, %f -> %f %f", __func__,
+        ROS_DEBUG("%s: Scaling cmd vel from %f, %f -> %f %f", __func__,
                 cmd_vel.linear.x, cmd_vel.angular.z,
                 new_cmd_vel.linear.x, new_cmd_vel.angular.z);
         cmd_vel = new_cmd_vel;
@@ -622,7 +622,7 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
         cmd_vel.angular.z /= tv_min_fact;
     }
     if(fabs(cmd_vel.linear.x) < stopped_tv_ && fabs(cmd_vel.angular.z) < min_inplace_rv_) {
-        ROS_INFO("%s: tv almost 0 and rv below min_inplace_rv_ -> increasing rv", __func__);
+        ROS_DEBUG("%s: tv almost 0 and rv below min_inplace_rv_ -> increasing rv", __func__);
         cmd_vel.angular.z = sign(cmd_vel.angular.z) * min_inplace_rv_;
     }
 
@@ -829,7 +829,7 @@ int ChannelController::evaluateChannels(const std::vector<DriveChannel> & channe
 {
     int best_idx = -1;
     double best_score = -1.0;
-    ROS_INFO("dist to target is: %f", distToTarget);
+    ROS_DEBUG("dist to target is: %f", distToTarget);
     for(unsigned int channel_idx = 0; channel_idx < channels.size(); channel_idx++) {
         const DriveChannel & channel = channels.at(channel_idx);
         double da = channel.da_;
@@ -992,7 +992,7 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
         return false;
     }
 
-    ROS_INFO("Best channel found with da %.0f deg width: %.1f m",
+    ROS_DEBUG("Best channel found with da %.0f deg width: %.1f m",
             angles::to_degrees(channels[best_idx].da_),
             2.0 * channels[best_idx].min_dist_);
 
