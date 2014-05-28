@@ -576,7 +576,7 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
 
     // go slower forward if we aren't pointing in the right direction
     double bad_direction_tv_scale =
-        straight_down(fabs(channel_dir), angles::from_degrees(5.0), angles::from_degrees(60.0));
+        straight_down(fabs(channel_dir), angles::from_degrees(10.0), angles::from_degrees(60.0));
 
     // go slower when narrow FIXME later: maybe only when narrow within where we are (not at end of channel)
     double channel_width_tv_scale = straight_up(channel_width, 0.4, 1.0);
@@ -620,6 +620,10 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
         // scale up so we get at least one higher.
         cmd_vel.linear.x /= tv_min_fact;
         cmd_vel.angular.z /= tv_min_fact;
+    }
+    if(fabs(cmd_vel.linear.x) < stopped_tv_ && fabs(cmd_vel.angular.z) < min_inplace_rv_) {
+        ROS_INFO("%s: tv almost 0 and rv below min_inplace_rv_ -> increasing rv", __func__);
+        cmd_vel.angular.z = sign(cmd_vel.angular.z) * min_inplace_rv_;
     }
 
     limitTwist(cmd_vel);
@@ -1115,6 +1119,7 @@ void ChannelController::ScopedVelocityStatus::publishStatus()
         tf::poseTFToMsg(robot_pose, statusMarker.pose);
     }
     statusMarker.pose.position.x += 1.0;
+    statusMarker.pose.position.z += 1.0;
     statusMarker.color.r = 1.0;
     statusMarker.color.g = 1.0;
     statusMarker.color.b = 0.0;
