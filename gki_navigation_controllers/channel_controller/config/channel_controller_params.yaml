@@ -24,6 +24,7 @@ ChannelController:
   max_accel_tv: 2.0
   max_accel_rv: 2.3
 
+  wait_for_obstacles_time: 15.0
 
   visualize_voronoi: true
 

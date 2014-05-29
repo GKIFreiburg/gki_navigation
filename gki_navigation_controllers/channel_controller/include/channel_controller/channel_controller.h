@@ -98,7 +98,7 @@ namespace channel_controller
             virtual bool computeVelocityCommands(geometry_msgs::Twist & cmd_vel);
 
         protected:
-            void updateVoronoi();
+            bool updateVoronoi();
             void visualizeVoronoi();
 
             /// Transform global_plan_ to the controller frame starting at start_index.
@@ -186,6 +186,8 @@ namespace channel_controller
 
             ros::Time get_to_safe_waypoint_start_time_;
 
+            ros::Time waiting_for_obstacles_start_time_;
+
             enum ChannelControllerState state_;
             enum SafeWaypointState safe_waypoint_state_;
 
@@ -228,6 +230,11 @@ namespace channel_controller
             // FIXME later: limit this somewhere, but also consider braking for obstacles hard!
             double max_accel_tv_;   ///< Max change in tv per second
             double max_accel_rv_;   ///< Max change in rv per second
+
+            /// Wait if there are no obstacles found at all for this time.
+            /// Careful: will not move in empty areas!
+            /// Set to <= 0 to disable, Set to very large to never move in perceived empty areas.
+            double wait_for_obstacles_time_;
 
             bool visualize_voronoi_;
             double vis_max_dist_;

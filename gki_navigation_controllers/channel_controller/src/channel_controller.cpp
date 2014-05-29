@@ -32,6 +32,8 @@ void ChannelController::initialize(std::string name,
     state_ = CSFollowChannel;
     safe_waypoint_state_ = SWSNone;
 
+    waiting_for_obstacles_start_time_ = ros::Time(0);
+
     voronoi_.initializeEmpty(costmap_ros_->getSizeInCellsX(),
             costmap_ros_->getSizeInCellsY(), true);
 
@@ -68,6 +70,8 @@ void ChannelController::initialize(std::string name,
     nhPriv.param("max_accel_tv", max_accel_tv_, 2.0);
     nhPriv.param("max_accel_rv", max_accel_rv_, 1.5);
 
+    nhPriv.param("wait_for_obstacles_time", wait_for_obstacles_time_, -1.0);
+
     nhPriv.param("vis_max_dist", vis_max_dist_, 1.0);
     nhPriv.param("visualize_voronoi", visualize_voronoi_, false);
 
@@ -88,6 +92,7 @@ void ChannelController::initialize(std::string name,
     ROS_INFO("stopped_rv: %f", stopped_rv_);
     ROS_INFO("max_accel_tv: %f", max_accel_tv_);
     ROS_INFO("max_accel_rv: %f", max_accel_rv_);
+    ROS_INFO("wait_for_obstacles_time: %f", wait_for_obstacles_time_);
     ROS_INFO("vis_max_dist: %f", vis_max_dist_);
     ROS_INFO("visualize_voronoi: %d", visualize_voronoi_);
 
@@ -105,8 +110,9 @@ void ChannelController::initialize(std::string name,
     srand48(time(NULL));
 }
 
-void ChannelController::updateVoronoi()
+bool ChannelController::updateVoronoi()
 {
+    bool voronoi_ok = true;
     costmap_ros_->getCostmapCopy(costmap_);     // srsly we have to copy that to get to the data??????
     ROS_ASSERT(costmap_.getSizeInCellsX() == voronoi_.getSizeX());
     ROS_ASSERT(costmap_.getSizeInCellsY() == voronoi_.getSizeY());
@@ -119,11 +125,41 @@ void ChannelController::updateVoronoi()
             }
         }
     }
+    // If there are no obstacles, wait as a precaution (assume there always will be _some_)
+    // Will stop in actual free space!
+    if(wait_for_obstacles_time_ > 0.0 && obstacles.empty()) {
+        if(waiting_for_obstacles_start_time_ == ros::Time(0)) {
+            // first time we got in here
+            waiting_for_obstacles_start_time_ = ros::Time::now();
+
+            ROS_WARN("No obstacles in local costmap. Starting to wait for %fs",
+                    wait_for_obstacles_time_);
+
+            kobuki_msgs::Sound warn_sound;
+            warn_sound.value = kobuki_msgs::Sound::ERROR;
+            pub_sound_.publish(warn_sound);
+            voronoi_ok = false;
+        } else if(ros::Time::now() - waiting_for_obstacles_start_time_ <=
+                ros::Duration(wait_for_obstacles_time_)) {
+            ROS_WARN_THROTTLE(1.0, "No obstacles in local costmap. Waiting %.1fs/%.1fs before going.",
+                    (ros::Time::now() - waiting_for_obstacles_start_time_).toSec(),
+                    wait_for_obstacles_time_);
+            voronoi_ok = false;
+        } // else: over the time, but still no obstacles
+        // keep the start time active until we receive obstacles,
+        // but continue going anyways as the wait time is over
+    }
+    // obstacles found, reset waiting_for_obstacles_start_time_
+    if(!obstacles.empty())
+        waiting_for_obstacles_start_time_ = ros::Time(0);
+
     voronoi_.exchangeObstacles(obstacles);
     voronoi_.update(true);
     //voronoi_.prune(); // FIXME This only does voronoi stuff, not distance related.
     if(visualize_voronoi_)
         visualizeVoronoi();
+
+    return voronoi_ok;
 }
 
 void ChannelController::visualizeVoronoi()
@@ -603,11 +639,15 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
     tv_scale = std::min(tv_scale, close_to_goal_tv_scale);
     if(tv_scale == close_to_goal_tv_scale)
         tv_scale_reason = "close_to_goal";
+    if(tv_scale >= 0.99)
+        tv_scale_reason = "none";
 
     std::string rv_scale_reason = "none";
     double rv_scale = close_to_goal_rv_scale;
     if(rv_scale < 1.0)
         rv_scale_reason = "close_to_goal";
+    if(rv_scale >= 0.99)
+        rv_scale_reason = "none";
 
     cmd_vel.linear.x *= 0.1 + 0.9 * tv_scale;
     cmd_vel.angular.z *= 0.1 + 0.9 * rv_scale;
@@ -896,8 +936,10 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
     cmd_vel = geometry_msgs::Twist();   // init to 0
     ScopedVelocityStatus velStatus(cmd_vel, pub_status_marker_, pub_sound_, pub_led_, costmap_ros_);
 
-    // True if a valid velocity command was found, false otherwise
-    updateVoronoi();
+    if(!updateVoronoi()) {
+        ROS_ERROR_THROTTLE(1.0, "updateVoronoi failed.");
+        return false;
+    }
 
     if(!localizeGlobalPlan(current_waypoint_)) {
         return false;
