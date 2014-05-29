@@ -100,12 +100,12 @@ void ChannelController::initialize(std::string name,
     pub_status_marker_ = nhPriv.advertise<visualization_msgs::Marker>("drive_channel_status", 1);
     pub_local_plan_ = nhPriv.advertise<nav_msgs::Path>("local_plan", 1);
 
-    pub_sound_ = nh.advertise<kobuki_msgs::Sound>("mobile_base/commands/sound", 1);
-    pub_led_ = nh.advertise<kobuki_msgs::Led>("mobile_base/commands/led1", 1);
+    pub_sound_ = nh.advertise<kobuki_msgs::Sound>("mobile_base/commands/sound", 3);
+    pub_led_ = nh.advertise<kobuki_msgs::Led>("mobile_base/commands/led1", 3);
 
     sub_odom_ = nh.subscribe("odom", 1, &ChannelController::odometryCallback, this);
 
-    updateVoronoi();
+    //updateVoronoi();
 
     srand48(time(NULL));
 }
@@ -137,6 +137,7 @@ bool ChannelController::updateVoronoi()
 
             kobuki_msgs::Sound warn_sound;
             warn_sound.value = kobuki_msgs::Sound::ERROR;
+            //usleep(500*1000);
             pub_sound_.publish(warn_sound);
             voronoi_ok = false;
         } else if(ros::Time::now() - waiting_for_obstacles_start_time_ <=
@@ -423,8 +424,12 @@ visualization_msgs::Marker ChannelController::createChannelMarkers(
     forEach(const DriveChannel & channel, channels) {
         // rotation of 90 for half of width and the end to show width
         double dir = channel.direction();
-        tf::Vector3 half_width(0.0, channel.min_dist_, 0.0);
-        tf::Vector3 half_width_other(0.0, -channel.min_dist_, 0.0);
+        double min_dist = channel.min_dist_;
+        if(min_dist > 2.0 * std::max(costmap_.getSizeInMetersX(), costmap_.getSizeInMetersY())) {
+            min_dist = 2.0 * std::max(costmap_.getSizeInMetersX(), costmap_.getSizeInMetersY());
+        }
+        tf::Vector3 half_width(0.0, min_dist, 0.0);
+        tf::Vector3 half_width_other(0.0, -min_dist, 0.0);
         tf::Pose side_offset(tf::createQuaternionFromYaw(0.0), half_width);
         tf::Pose side_offset_other(tf::createQuaternionFromYaw(0.0), half_width_other);
         tf::Pose channel_dir(tf::createQuaternionFromYaw(dir));
@@ -884,21 +889,21 @@ int ChannelController::evaluateChannels(const std::vector<DriveChannel> & channe
             }
         }
     }
-    if(best_idx < 0) {
-        ROS_WARN("No valid channel found - trying channels at half distToTarget");
-        for(unsigned int channel_idx = 0; channel_idx < channels.size(); channel_idx++) {
-            const DriveChannel & channel = channels.at(channel_idx);
-            double da = channel.da_;
-            double dist = channel.min_dist_;
-            if(channel.length() >= 0.5 * distToTarget) {   //  valid
-                double score = computeChannelScore(da, dist);
-                if(score > best_score) {
-                    best_score = score;
-                    best_idx = channel_idx;
-                }
-            }
-        }
-    }
+    //if(best_idx < 0) {
+    //    ROS_WARN("No valid channel found - trying channels at half distToTarget");
+    //    for(unsigned int channel_idx = 0; channel_idx < channels.size(); channel_idx++) {
+    //        const DriveChannel & channel = channels.at(channel_idx);
+    //        double da = channel.da_;
+    //        double dist = channel.min_dist_;
+    //        if(channel.length() >= 0.5 * distToTarget) {   //  valid
+    //            double score = computeChannelScore(da, dist);
+    //            if(score > best_score) {
+    //                best_score = score;
+    //                best_idx = channel_idx;
+    //            }
+    //        }
+    //    }
+    //}
 
     return best_idx;
 }
@@ -972,7 +977,7 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
     double dist_at_next_wpt = getDistanceAtPose(local_plan_.front(), &local_wpt_in_bounds);
     if(local_wpt_in_bounds) {   // out of bounds OK - far away - drive there first
         if(dist_at_next_wpt <= 0.0) {
-            ROS_WARN("Next waypoint in obstacle - requesting new plan");
+            ROS_WARN_THROTTLE(1.0, "Next waypoint in obstacle - requesting new plan");
             return false;
         }
     }
