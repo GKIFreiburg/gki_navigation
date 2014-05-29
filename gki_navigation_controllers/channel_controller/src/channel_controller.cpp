@@ -100,7 +100,7 @@ void ChannelController::initialize(std::string name,
     pub_status_marker_ = nhPriv.advertise<visualization_msgs::Marker>("drive_channel_status", 1);
     pub_local_plan_ = nhPriv.advertise<nav_msgs::Path>("local_plan", 1);
 
-    pub_sound_ = nh.advertise<kobuki_msgs::Sound>("mobile_base/commands/sound", 3);
+    pub_sound_ = nh.advertise<kobuki_msgs::Sound>("mobile_base/commands/sound", 1);
     pub_led_ = nh.advertise<kobuki_msgs::Led>("mobile_base/commands/led1", 3);
 
     sub_odom_ = nh.subscribe("odom", 1, &ChannelController::odometryCallback, this);
