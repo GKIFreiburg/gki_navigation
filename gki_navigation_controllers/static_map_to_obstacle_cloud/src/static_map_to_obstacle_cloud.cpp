@@ -3,22 +3,41 @@
 #include <pcl_ros/point_cloud.h>
 #include <pcl/point_types.h>
 #include <tf/tf.h>
+#include <tf/transform_listener.h>
 
 pcl::PointCloud<pcl::PointXYZ> cloud;
 ros::Publisher pubCloud;
+tf::TransformListener* tfl;
+std::string map_frame_id;
 
 void publish_obstacle_cloud()
 {
     if(cloud.points.size() <= 0)
         return;
 
-    cloud.header.stamp = ros::Time::now();
-    pubCloud.publish(cloud);
+    tf::StampedTransform baseToMap;
+    try {
+        tfl->waitForTransform("base_footprint", map_frame_id, ros::Time(0), ros::Duration(10.0));
+        tfl->lookupTransform("base_footprint", map_frame_id, ros::Time(0), baseToMap);
+    } catch (tf::TransformException ex){
+        ROS_ERROR("%s",ex.what());
+    }
+
+    pcl::PointCloud<pcl::PointXYZ> cloudOut;
+    cloudOut.header.frame_id = "base_footprint";
+    cloudOut.header.stamp = baseToMap.stamp_;
+    for(unsigned int i = 0; i < cloud.points.size(); i++) {
+        tf::Point pin(cloud.points[i].x, cloud.points[i].y, cloud.points[i].z);
+        tf::Point pout = baseToMap * pin;
+        cloudOut.points.push_back(pcl::PointXYZ(pout.x(), pout.y(), pout.z()));
+    }
+    pubCloud.publish(cloudOut);
 }
 
 void map_callback(const nav_msgs::OccupancyGrid & map)
 {
     ROS_INFO("static_map_to_obstacle_cloud: Got new map.");
+    map_frame_id = map.header.frame_id;
     tf::Pose mapOrigin;
     tf::poseMsgToTF(map.info.origin, mapOrigin);
 
@@ -45,6 +64,7 @@ int main(int argc, char** argv)
 {
     ros::init(argc, argv, "static_map_to_obstacle_cloud");
     ros::NodeHandle nh;
+    tfl = new tf::TransformListener();
 
     ros::Subscriber subMap = nh.subscribe("map", 1, map_callback);
     pubCloud = nh.advertise<pcl::PointCloud<pcl::PointXYZ> >("obstacle_cloud", 1);
