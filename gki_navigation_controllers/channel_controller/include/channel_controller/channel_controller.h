@@ -180,6 +180,8 @@ namespace channel_controller
             ros::Publisher pub_sound_;
             ros::Publisher pub_led_;
 
+            ros::Publisher pub_call_clear_;
+
             nav_msgs::Odometry last_odom_;
 
             ros::Time last_cmd_vel_time_;   ///< last time we send a command
@@ -187,6 +189,8 @@ namespace channel_controller
             ros::Time get_to_safe_waypoint_start_time_;
 
             ros::Time waiting_for_obstacles_start_time_;
+
+            ros::Time last_progress_time_;
 
             enum ChannelControllerState state_;
             enum SafeWaypointState safe_waypoint_state_;
@@ -235,6 +239,10 @@ namespace channel_controller
             /// Careful: will not move in empty areas!
             /// Set to <= 0 to disable, Set to very large to never move in perceived empty areas.
             double wait_for_obstacles_time_;
+
+            /// If > 0 and no new waypoints reached for no_progress_hard_clear_time, call
+            /// node to hard clear costmaps.
+            double no_progress_hard_clear_time_;
 
             bool visualize_voronoi_;
             double vis_max_dist_;

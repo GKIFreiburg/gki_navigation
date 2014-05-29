@@ -8,6 +8,7 @@
 #include <kobuki_msgs/Sound.h>
 #include <kobuki_msgs/Led.h>
 #include <boost/foreach.hpp>
+#include <std_msgs/Empty.h>
 #define forEach BOOST_FOREACH
 
 namespace channel_controller
@@ -71,6 +72,7 @@ void ChannelController::initialize(std::string name,
     nhPriv.param("max_accel_rv", max_accel_rv_, 1.5);
 
     nhPriv.param("wait_for_obstacles_time", wait_for_obstacles_time_, -1.0);
+    nhPriv.param("no_progress_hard_clear_time", no_progress_hard_clear_time_, -1.0);
 
     nhPriv.param("vis_max_dist", vis_max_dist_, 1.0);
     nhPriv.param("visualize_voronoi", visualize_voronoi_, false);
@@ -93,6 +95,7 @@ void ChannelController::initialize(std::string name,
     ROS_INFO("max_accel_tv: %f", max_accel_tv_);
     ROS_INFO("max_accel_rv: %f", max_accel_rv_);
     ROS_INFO("wait_for_obstacles_time: %f", wait_for_obstacles_time_);
+    ROS_INFO("no_progress_hard_clear_time: %f", no_progress_hard_clear_time_);
     ROS_INFO("vis_max_dist: %f", vis_max_dist_);
     ROS_INFO("visualize_voronoi: %d", visualize_voronoi_);
 
@@ -102,6 +105,8 @@ void ChannelController::initialize(std::string name,
 
     pub_sound_ = nh.advertise<kobuki_msgs::Sound>("mobile_base/commands/sound", 1);
     pub_led_ = nh.advertise<kobuki_msgs::Led>("mobile_base/commands/led1", 3);
+
+    pub_call_clear_ = nh.advertise<std_msgs::Empty>("/call_clear", 1);
 
     sub_odom_ = nh.subscribe("odom", 1, &ChannelController::odometryCallback, this);
 
@@ -271,6 +276,10 @@ bool ChannelController::setPlan(const std::vector<geometry_msgs::PoseStamped> & 
         state_ = CSGetToSafeWaypointDist;
     } else {
         state_ = CSFollowChannel;
+    }
+
+    if(!sameGoal) {
+        last_progress_time_ = ros::Time::now();
     }
 
     // localize now to verify this makes sense somehow and return upon that.
@@ -959,6 +968,7 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
     // No need to follow the plan backwards if we somehow got ahead towards goal - only that counts.
     while(!local_plan_.empty() && currentWaypointReached()) {
         current_waypoint_++;
+        last_progress_time_ = ros::Time::now();
         if(!localizeGlobalPlan(current_waypoint_)) {
             return false;
         }
@@ -969,6 +979,15 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
     }
     tf::Stamped<tf::Pose> robot_pose;
     if(!costmap_ros_->getRobotPose(robot_pose)) {
+        return false;
+    }
+
+    if(no_progress_hard_clear_time_ > 0 && 
+            ros::Time::now() - last_progress_time_ > ros::Duration(no_progress_hard_clear_time_)) {
+        ROS_WARN("No progress for %f s - calling /call_clear.", no_progress_hard_clear_time_);
+        std_msgs::Empty e;
+        pub_call_clear_.publish(e);
+        last_progress_time_ = ros::Time::now(); // prevent this happening all the time, essentially reset
         return false;
     }
 
