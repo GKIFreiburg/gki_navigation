@@ -988,6 +988,10 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
         std_msgs::Empty e;
         pub_call_clear_.publish(e);
         last_progress_time_ = ros::Time::now(); // prevent this happening all the time, essentially reset
+
+        kobuki_msgs::Sound snd;
+        snd.value = kobuki_msgs::Sound::OFF;
+        pub_sound_.publish(snd);
         return false;
     }
 
