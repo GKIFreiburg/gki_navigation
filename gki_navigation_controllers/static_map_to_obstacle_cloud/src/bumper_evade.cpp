@@ -10,13 +10,13 @@
 using namespace std;
 
 // params
-int min_bumps_to_trigger = 2;
+int min_bumps_to_trigger = 3;
 double min_bumps_trigger_time = 30.0;
 double min_time_between_evades = 30.0;
 
-double evade_time = 5.0;
-double evade_tv = 0.8;
-double evade_rv = 0.6;
+double evade_time = 4.0;
+double evade_tv = 0.1;
+double evade_rv = 0.25;
 
 ros::Time evade_start_time;
 ros::Time last_evade_end_time;
@@ -29,6 +29,7 @@ deque<pair<kobuki_msgs::BumperEvent, ros::Time> > bumper_buffer;
 
 void bumper_callback(const kobuki_msgs::BumperEvent & e)
 {
+    ROS_DEBUG_STREAM("bump: " << e);
     if(e.state == kobuki_msgs::BumperEvent::PRESSED)
         bumper_buffer.push_back(make_pair(e, ros::Time::now()));
 }
@@ -41,11 +42,12 @@ void execute_evade()
     if(!bumper_buffer.empty()) {
         kobuki_msgs::BumperEvent last_bump = bumper_buffer.back().first;
         if(last_bump.bumper == kobuki_msgs::BumperEvent::LEFT) {
-            cmd_vel.angular.z = evade_rv;
-        } else if(last_bump.bumper == kobuki_msgs::BumperEvent::RIGHT) {
             cmd_vel.angular.z = -evade_rv;
+        } else if(last_bump.bumper == kobuki_msgs::BumperEvent::RIGHT) {
+            cmd_vel.angular.z = evade_rv;
         }
     }
+    ROS_INFO_STREAM_THROTTLE(1.0, "execute_evade: " << cmd_vel);
     pubCmdVel.publish(cmd_vel);
 }
 
@@ -56,13 +58,14 @@ void check_evade()
         if(now - evade_start_time <= ros::Duration(evade_time)) {
             execute_evade();
         } else {   // evade timeout = finished
+            ROS_INFO("evade finished");
             evade_active = false;
             last_evade_end_time = now;
         }
         return;
     }
     // check if activate
-    if(now - last_evade_end_time > ros::Duration(min_time_between_evades))
+    if(now - last_evade_end_time <= ros::Duration(min_time_between_evades))
         return;
 
     // remove too old ones from buffer
@@ -70,6 +73,7 @@ void check_evade()
             now - bumper_buffer.front().second > ros::Duration(min_bumps_trigger_time)) {
         bumper_buffer.pop_front();
     }
+    ROS_DEBUG_THROTTLE(1.0, "There are %zu bumps", bumper_buffer.size());
 
     if((int)bumper_buffer.size() >= min_bumps_to_trigger) {
         evade_start_time = now;
