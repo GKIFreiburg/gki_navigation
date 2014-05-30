@@ -678,6 +678,7 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
     if(fabs(cmd_vel.linear.x) < stopped_tv_ && fabs(cmd_vel.angular.z) < min_inplace_rv_) {
         ROS_DEBUG("%s: tv almost 0 and rv below min_inplace_rv_ -> increasing rv", __func__);
         cmd_vel.angular.z = sign(cmd_vel.angular.z) * min_inplace_rv_;
+        cmd_vel.linear.x = sign(cmd_vel.linear.x) * stopped_tv_;    // drive at least stopped tv
     }
 
     limitTwist(cmd_vel);
@@ -887,6 +888,9 @@ int ChannelController::evaluateChannels(const std::vector<DriveChannel> & channe
     for(unsigned int channel_idx = 0; channel_idx < channels.size(); channel_idx++) {
         const DriveChannel & channel = channels.at(channel_idx);
         double da = channel.da_;
+        if(fabs(da) > angles::from_degrees(90.0)) {
+            continue;
+        }
         double dist = channel.min_dist_;
         if(channel.length() >= distToTarget) {   //  valid
             //ROS_INFO("Valid channel found with da %f at %zu", da, channels.size() - 1);

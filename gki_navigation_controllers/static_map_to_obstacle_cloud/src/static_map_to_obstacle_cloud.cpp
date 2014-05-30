@@ -69,7 +69,7 @@ int main(int argc, char** argv)
     ros::Subscriber subMap = nh.subscribe("map", 1, map_callback);
     pubCloud = nh.advertise<pcl::PointCloud<pcl::PointXYZ> >("obstacle_cloud", 1);
 
-    ros::Rate rate(2.0);
+    ros::Rate rate(15.0);
     while(ros::ok())
     {
         ros::spinOnce();
