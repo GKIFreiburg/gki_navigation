@@ -663,8 +663,8 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
     if(rv_scale >= 0.99)
         rv_scale_reason = "none";
 
-    cmd_vel.linear.x *= 0.1 + 0.9 * tv_scale;
-    cmd_vel.angular.z *= 0.1 + 0.9 * rv_scale;
+    cmd_vel.linear.x *= 0.2 + 0.8 * tv_scale;
+    cmd_vel.angular.z *= 0.2 + 0.8 * rv_scale;
 
     // Let's make sure we're not below the min values
     double tv_min_fact = fabs(cmd_vel.linear.x)/min_tv_;
