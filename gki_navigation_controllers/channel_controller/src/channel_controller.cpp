@@ -271,7 +271,7 @@ bool ChannelController::setPlan(const std::vector<geometry_msgs::PoseStamped> & 
 
     global_plan_ = plan;
     current_waypoint_ = 0;
-    if(sameGoal && state_ == CSGetToSafeWaypointDist) {
+    if(false && sameGoal && state_ == CSGetToSafeWaypointDist) {
         ROS_WARN("New plan for same goal - keeping state CSGetToSafeWaypointDist");
         state_ = CSGetToSafeWaypointDist;
     } else {
