@@ -7,6 +7,7 @@ DynamicVoronoi::DynamicVoronoi() {
   sqrt2 = sqrt(2.0);
   data = NULL;
   gridMap = NULL;
+  maxDistSquared = INT_MAX;
 }
 
 DynamicVoronoi::~DynamicVoronoi() {
@@ -41,7 +42,7 @@ void DynamicVoronoi::initializeEmpty(int _sizeX, int _sizeY, bool initGridMap) {
   
   dataCell c;
   c.dist = INFINITY;
-  c.sqdist = INT_MAX;
+  c.sqdist = maxDistSquared;
   c.obstX = invalidObstData;
   c.obstY = invalidObstData;
   c.voronoi = free;
@@ -150,6 +151,11 @@ void DynamicVoronoi::exchangeObstacles(std::vector<INTPOINT> points) {
   }  
 }
 
+void DynamicVoronoi::setMaxDist(int maxDistSq)
+{
+    maxDistSquared = maxDistSq;
+}
+
 void DynamicVoronoi::update(bool updateRealDist) {
 
   commitAndColorize(updateRealDist);
@@ -180,7 +186,7 @@ void DynamicVoronoi::update(bool updateRealDist) {
               nc.obstX = invalidObstData;
               nc.obstY = invalidObstData;
               if (updateRealDist) nc.dist = INFINITY;
-              nc.sqdist = INT_MAX;
+              nc.sqdist = maxDistSquared;
               data[nx][ny] = nc;
             } else {
               if(nc.queueing != fwQueued){

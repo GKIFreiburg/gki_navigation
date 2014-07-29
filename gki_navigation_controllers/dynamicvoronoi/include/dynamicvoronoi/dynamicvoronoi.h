@@ -47,6 +47,8 @@ public:
   unsigned int getSizeX() const {return sizeX;}
   //! returns the vertical size of the workspace/map
   unsigned int getSizeY() const {return sizeY;}
+  //! set maximum represented distance of voronoi
+  void setMaxDist(int maxDistSquared);
 
 private:  
   struct dataCell {
@@ -95,6 +97,7 @@ private:
   // parameters
   int padding;
   double doubleThreshold;
+  int maxDistSquared;
 
   double sqrt2;
 
