@@ -1,0 +1,19 @@
+<package>
+  <description brief="static_map_to_obstacle_cloud">
+
+     static_map_to_obstacle_cloud
+
+  </description>
+  <author>dornhege</author>
+  <license>BSD</license>
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/static_map_to_obstacle_cloud</url>
+  <depend package="roscpp"/>
+  <depend package="pcl_ros"/>
+  <depend package="nav_msgs"/>
+  <depend package="geometry_msgs"/>
+  <depend package="kobuki_msgs"/>
+
+</package>
+
+

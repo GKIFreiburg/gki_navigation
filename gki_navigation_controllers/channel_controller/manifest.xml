@@ -12,6 +12,7 @@
   <depend package="angles"/>
   <depend package="dynamicvoronoi"/>
   <depend package="visualization_msgs"/>
+  <depend package="kobuki_msgs"/>
 
   <export>
     <nav_core plugin="${prefix}/channel_controller_plugins.xml" />

@@ -5,7 +5,10 @@
 #include <nav_msgs/Path.h>
 #include <angles/angles.h>
 #include <visualization_msgs/MarkerArray.h>
+#include <kobuki_msgs/Sound.h>
+#include <kobuki_msgs/Led.h>
 #include <boost/foreach.hpp>
+#include <std_msgs/Empty.h>
 #define forEach BOOST_FOREACH
 
 namespace channel_controller
@@ -27,6 +30,11 @@ void ChannelController::initialize(std::string name,
     tf_ = tf;
     costmap_ros_ = costmap_ros;
 
+    state_ = CSFollowChannel;
+    safe_waypoint_state_ = SWSNone;
+
+    waiting_for_obstacles_start_time_ = ros::Time(0);
+
     voronoi_.initializeEmpty(costmap_ros_->getSizeInCellsX(),
             costmap_ros_->getSizeInCellsY(), true);
 
@@ -40,6 +48,11 @@ void ChannelController::initialize(std::string name,
     ROS_INFO("Initializing ChannelController from ~/%s", class_name.c_str());
     ros::NodeHandle nhPriv("~/" + class_name);    // ~ = /move_base, our config should be in /move_base/name
     ros::NodeHandle nh;
+
+    nhPriv.param("safe_waypoint_channel_width", safe_waypoint_channel_width_, 0.5);
+    nhPriv.param("safe_channel_width", safe_channel_width_, 0.4);
+    nhPriv.param("min_get_to_safe_dist_time", min_get_to_safe_dist_time_, 3.0);
+    nhPriv.param("max_get_to_safe_dist_time", max_get_to_safe_dist_time_, 10.0);
 
     nhPriv.param("waypoint_reached_dist", waypoint_reached_dist_, 0.3);
     nhPriv.param("waypoint_reached_angle", waypoint_reached_angle_, 7.0);
@@ -58,9 +71,16 @@ void ChannelController::initialize(std::string name,
     nhPriv.param("max_accel_tv", max_accel_tv_, 2.0);
     nhPriv.param("max_accel_rv", max_accel_rv_, 1.5);
 
+    nhPriv.param("wait_for_obstacles_time", wait_for_obstacles_time_, -1.0);
+    nhPriv.param("no_progress_hard_clear_time", no_progress_hard_clear_time_, -1.0);
+
     nhPriv.param("vis_max_dist", vis_max_dist_, 1.0);
     nhPriv.param("visualize_voronoi", visualize_voronoi_, false);
 
+    ROS_INFO("safe_waypoint_channel_width: %f", safe_waypoint_channel_width_);
+    ROS_INFO("safe_channel_width: %f", safe_channel_width_);
+    ROS_INFO("min_get_to_safe_dist_time: %f", min_get_to_safe_dist_time_);
+    ROS_INFO("max_get_to_safe_dist_time: %f", max_get_to_safe_dist_time_);
     ROS_INFO("waypoint_reached_dist: %f", waypoint_reached_dist_);
     ROS_INFO("waypoint_reached_angle: %f", waypoint_reached_angle_);
     ROS_INFO("goal_reached_dist: %f", goal_reached_dist_);
@@ -74,20 +94,30 @@ void ChannelController::initialize(std::string name,
     ROS_INFO("stopped_rv: %f", stopped_rv_);
     ROS_INFO("max_accel_tv: %f", max_accel_tv_);
     ROS_INFO("max_accel_rv: %f", max_accel_rv_);
+    ROS_INFO("wait_for_obstacles_time: %f", wait_for_obstacles_time_);
+    ROS_INFO("no_progress_hard_clear_time: %f", no_progress_hard_clear_time_);
     ROS_INFO("vis_max_dist: %f", vis_max_dist_);
     ROS_INFO("visualize_voronoi: %d", visualize_voronoi_);
 
     pub_markers_ = nhPriv.advertise<visualization_msgs::MarkerArray>("channel_markers", 1);
+    pub_status_marker_ = nhPriv.advertise<visualization_msgs::Marker>("drive_channel_status", 1);
     pub_local_plan_ = nhPriv.advertise<nav_msgs::Path>("local_plan", 1);
+
+    pub_sound_ = nh.advertise<kobuki_msgs::Sound>("mobile_base/commands/sound", 1);
+    pub_led_ = nh.advertise<kobuki_msgs::Led>("mobile_base/commands/led1", 3);
+
+    pub_call_clear_ = nh.advertise<std_msgs::Empty>("/call_clear", 1);
 
     sub_odom_ = nh.subscribe("odom", 1, &ChannelController::odometryCallback, this);
 
-    updateVoronoi();
-}
-// TODO recovery - how triggered
+    //updateVoronoi();
 
-void ChannelController::updateVoronoi()
+    srand48(time(NULL));
+}
+
+bool ChannelController::updateVoronoi()
 {
+    bool voronoi_ok = true;
     costmap_ros_->getCostmapCopy(costmap_);     // srsly we have to copy that to get to the data??????
     ROS_ASSERT(costmap_.getSizeInCellsX() == voronoi_.getSizeX());
     ROS_ASSERT(costmap_.getSizeInCellsY() == voronoi_.getSizeY());
@@ -100,11 +130,42 @@ void ChannelController::updateVoronoi()
             }
         }
     }
+    // If there are no obstacles, wait as a precaution (assume there always will be _some_)
+    // Will stop in actual free space!
+    if(wait_for_obstacles_time_ > 0.0 && obstacles.empty()) {
+        if(waiting_for_obstacles_start_time_ == ros::Time(0)) {
+            // first time we got in here
+            waiting_for_obstacles_start_time_ = ros::Time::now();
+
+            ROS_WARN("No obstacles in local costmap. Starting to wait for %fs",
+                    wait_for_obstacles_time_);
+
+            kobuki_msgs::Sound warn_sound;
+            warn_sound.value = kobuki_msgs::Sound::ERROR;
+            //usleep(500*1000);
+            pub_sound_.publish(warn_sound);
+            voronoi_ok = false;
+        } else if(ros::Time::now() - waiting_for_obstacles_start_time_ <=
+                ros::Duration(wait_for_obstacles_time_)) {
+            ROS_WARN_THROTTLE(1.0, "No obstacles in local costmap. Waiting %.1fs/%.1fs before going.",
+                    (ros::Time::now() - waiting_for_obstacles_start_time_).toSec(),
+                    wait_for_obstacles_time_);
+            voronoi_ok = false;
+        } // else: over the time, but still no obstacles
+        // keep the start time active until we receive obstacles,
+        // but continue going anyways as the wait time is over
+    }
+    // obstacles found, reset waiting_for_obstacles_start_time_
+    if(!obstacles.empty())
+        waiting_for_obstacles_start_time_ = ros::Time(0);
+
     voronoi_.exchangeObstacles(obstacles);
     voronoi_.update(true);
     //voronoi_.prune(); // FIXME This only does voronoi stuff, not distance related.
     if(visualize_voronoi_)
         visualizeVoronoi();
+
+    return voronoi_ok;
 }
 
 void ChannelController::visualizeVoronoi()
@@ -175,15 +236,51 @@ bool ChannelController::isGoalReached()
     double cur_tv = last_odom_.twist.twist.linear.x;
     double cur_rv = last_odom_.twist.twist.angular.z;
     if(current_waypoint_ >= global_plan_.size() &&
-            fabs(cur_tv) < stopped_tv_ && fabs(cur_rv) < stopped_rv_)
+            fabs(cur_tv) < stopped_tv_ && fabs(cur_rv) < stopped_rv_) {
+        ROS_INFO("ChannelController: Goal Reached!");
+        kobuki_msgs::Sound sound;
+        sound.value = kobuki_msgs::Sound::CLEANINGEND;
+        pub_sound_.publish(sound);
         return true;
+    } else {
+        //ROS_INFO("Not at goal. At wp %d/%zu vel %f %f", current_waypoint_, global_plan_.size(),
+        //        cur_tv, cur_rv);
+    }
     return false;
 }
 
 bool ChannelController::setPlan(const std::vector<geometry_msgs::PoseStamped> & plan)
 {
+    // check if the new plan has the same goal
+    bool sameGoal = false;
+    if(!global_plan_.empty() && !plan.empty()) {
+        geometry_msgs::PoseStamped currentGoal = global_plan_.back();
+        geometry_msgs::PoseStamped newGoal = plan.back();
+        if(currentGoal.header.frame_id == newGoal.header.frame_id) {    // ignore time for fixed frames
+            tf::Pose currentGoalPose;
+            tf::Pose newGoalPose;
+            tf::poseMsgToTF(currentGoal.pose, currentGoalPose);
+            tf::poseMsgToTF(newGoal.pose, newGoalPose);
+            tf::Pose relPose = currentGoalPose.inverseTimes(newGoalPose);
+            if(relPose.getOrigin().length() < 0.05 &&
+                    fabs(tf::getYaw(relPose.getRotation())) < angles::from_degrees(5.0)) {
+                sameGoal = true;
+            }
+        }
+    }
+
     global_plan_ = plan;
     current_waypoint_ = 0;
+    if(false && sameGoal && state_ == CSGetToSafeWaypointDist) {
+        ROS_WARN("New plan for same goal - keeping state CSGetToSafeWaypointDist");
+        state_ = CSGetToSafeWaypointDist;
+    } else {
+        state_ = CSFollowChannel;
+    }
+
+    if(!sameGoal) {
+        last_progress_time_ = ros::Time::now();
+    }
 
     // localize now to verify this makes sense somehow and return upon that.
     return localizeGlobalPlan(current_waypoint_);
@@ -208,8 +305,15 @@ bool ChannelController::currentWaypointReached() const
         angleThreshold = goal_reached_angle_;
     }
 
-    if(toWaypoint.getOrigin().length() > distThreshold)
-        return false;
+    if(state_ != CSGoalTurn) {
+        // Setting state to CSGoalTurn determined that this
+        // already was true once, from then on we don't care
+        // (latched goal approach)
+        // This must not be checked in that case as CSGoalTurn
+        // only turns to goal, but never approaches again.
+        if(toWaypoint.getOrigin().length() > distThreshold)
+            return false;
+    }
     if(fabs(tf::getYaw(toWaypoint.getRotation())) > angleThreshold)
         return false;
 
@@ -218,7 +322,7 @@ bool ChannelController::currentWaypointReached() const
 
 bool ChannelController::localizeGlobalPlan(unsigned int start_index)
 {
-    // TODO test this with different frames for map/odom
+    // FIXME test this with different frames for map/odom
     nav_msgs::Path localPlanMsg;
     localPlanMsg.header.stamp = ros::Time(0);
     localPlanMsg.header.frame_id = costmap_ros_->getGlobalFrameID();
@@ -263,6 +367,7 @@ bool ChannelController::localizeGlobalPlan(unsigned int start_index)
     pub_local_plan_.publish(localPlanMsg);
     return true;
 }
+
 
 DriveChannel ChannelController::computeChannel(tf::Pose from_pose, tf::Pose to_pose, double clearance_dist) const
 {
@@ -326,11 +431,14 @@ visualization_msgs::Marker ChannelController::createChannelMarkers(
 
     int index = 0;
     forEach(const DriveChannel & channel, channels) {
-        // rotation of 90 for half of min_dist_ and the end to show width
-        tf::Pose channelDelta = channel.from_pose_.inverseTimes(channel.to_pose_);
-        double dir = atan2(channelDelta.getOrigin().y(), channelDelta.getOrigin().x());
-        tf::Vector3 half_width(0.0, channel.min_dist_/2.0, 0.0);
-        tf::Vector3 half_width_other(0.0, -channel.min_dist_/2.0, 0.0);
+        // rotation of 90 for half of width and the end to show width
+        double dir = channel.direction();
+        double min_dist = channel.min_dist_;
+        if(min_dist > 2.0 * std::max(costmap_.getSizeInMetersX(), costmap_.getSizeInMetersY())) {
+            min_dist = 2.0 * std::max(costmap_.getSizeInMetersX(), costmap_.getSizeInMetersY());
+        }
+        tf::Vector3 half_width(0.0, min_dist, 0.0);
+        tf::Vector3 half_width_other(0.0, -min_dist, 0.0);
         tf::Pose side_offset(tf::createQuaternionFromYaw(0.0), half_width);
         tf::Pose side_offset_other(tf::createQuaternionFromYaw(0.0), half_width_other);
         tf::Pose channel_dir(tf::createQuaternionFromYaw(dir));
@@ -342,16 +450,18 @@ visualization_msgs::Marker ChannelController::createChannelMarkers(
         pt.y = channel.from_pose_.getOrigin().y();
         pt.z = 0.0;
         channelMarker.points.push_back(pt);
+        //ROS_INFO_STREAM("X CHANNEL TO " << pt << " LENGTH " << channel.length());
         pt.x = channel.to_pose_.getOrigin().x();
         pt.y = channel.to_pose_.getOrigin().y();
         channelMarker.points.push_back(pt);
-        pt.x = channel.to_pose_.getOrigin().x() + z2.getOrigin().x();
-        pt.y = channel.to_pose_.getOrigin().y() + z2.getOrigin().y();
-        channelMarker.points.push_back(pt);
-        pt.x = channel.to_pose_.getOrigin().x() + z.getOrigin().x();
-        pt.y = channel.to_pose_.getOrigin().y() + z.getOrigin().y();
-        channelMarker.points.push_back(pt);
-        //ROS_INFO_STREAM("CHANNEL TO " << pt << " LENGTH " << channel_dist);
+        if(channel.length() > 0) {
+            pt.x = channel.to_pose_.getOrigin().x() + z2.getOrigin().x();
+            pt.y = channel.to_pose_.getOrigin().y() + z2.getOrigin().y();
+            channelMarker.points.push_back(pt);
+            pt.x = channel.to_pose_.getOrigin().x() + z.getOrigin().x();
+            pt.y = channel.to_pose_.getOrigin().y() + z.getOrigin().y();
+            channelMarker.points.push_back(pt);
+        }
         std_msgs::ColorRGBA col;
         col.r = 0.7;
         col.g = 0.0;
@@ -369,8 +479,10 @@ visualization_msgs::Marker ChannelController::createChannelMarkers(
         }
         channelMarker.colors.push_back(col);
         channelMarker.colors.push_back(col);
-        channelMarker.colors.push_back(col);
-        channelMarker.colors.push_back(col);
+        if(channel.length() > 0) {
+            channelMarker.colors.push_back(col);
+            channelMarker.colors.push_back(col);
+        }
         index++;
     }
 
@@ -438,7 +550,7 @@ void ChannelController::limitTwist(geometry_msgs::Twist & cmd_vel) const
     double dx_max = max_accel_tv_ * dt;
     double dth_max = max_accel_rv_ * dt;
 
-    // TODO stopping for obstacle? -> test and increase accel limits or not limit
+    // FIXME later: stopping for obstacle? -> test and increase accel limits or not limit
     // if the channel is too short.
 
     double twist_scale = 1.0;
@@ -467,108 +579,385 @@ void ChannelController::limitTwist(geometry_msgs::Twist & cmd_vel) const
         //    if(fabs(new_cmd_vel.angular.z) < min_rv_)
         //        new_cmd_vel.angular.z = sign(cmd_vel.angular.z) * min_rv_;
         //}
-        ROS_INFO("Scaling cmd vel from %f, %f -> %f %f", cmd_vel.linear.x, cmd_vel.angular.z,
+        ROS_DEBUG("%s: Scaling cmd vel from %f, %f -> %f %f", __func__,
+                cmd_vel.linear.x, cmd_vel.angular.z,
                 new_cmd_vel.linear.x, new_cmd_vel.angular.z);
         cmd_vel = new_cmd_vel;
     }
 }
 
-bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, geometry_msgs::Twist & cmd_vel) const
+bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, geometry_msgs::Twist & cmd_vel, ScopedVelocityStatus & status) const
 {
     ROS_ASSERT(!local_plan_.empty());
     cmd_vel = geometry_msgs::Twist();   // init to 0
 
-    tf::Pose relPose = channel.from_pose_.inverseTimes(channel.to_pose_);
-    double channel_dir = atan2(relPose.getOrigin().y(), relPose.getOrigin().x());
-    double channel_length = relPose.getOrigin().length();
-    double channel_width = channel.min_dist_;
-    double cur_tv = last_odom_.twist.twist.linear.x;
-    //double cur_rv = last_odom_.twist.twist.angular.z;
+    double channel_dir = channel.direction();
+    double channel_length = channel.length();
+    double channel_width = 2.0 * channel.min_dist_;
 
     // the channel should have originated at robot_pose
     tf::Pose relToWp = channel.from_pose_.inverseTimes(local_plan_.front());
-    double dist_to_wp = relToWp.getOrigin().length();
-    double angle_to_wp = atan2(relToWp.getOrigin().y(), relToWp.getOrigin().x());
-    // TODO maybe look ahead if next waypoints are on the same channels: GO!
+    // FIXME later: maybe look ahead if next waypoints are on the same channels: GO!
 
     // channel way different, stop first, then turn in place
-    if(fabs(channel_dir) > angles::from_degrees(90)) {
+    if(fabs(channel_dir) > angles::from_degrees(45)) {
+        double cur_tv = last_odom_.twist.twist.linear.x;
+        //double cur_rv = last_odom_.twist.twist.angular.z;
         if(fabs(cur_tv) < stopped_tv_) {
             // Just turn full. We're stopped and way in the wrong direction
             cmd_vel.angular.z = max_rv_ * sign(channel_dir);
+            status.setChannelTurnToChannel(channel_dir, cur_tv);
+        } else {    // else: stop (0)
+            status.setChannelStopToTurn(channel_dir, cur_tv);
         }
-        // else: stop (0)
+
         return true;
     }
 
     // kinda steer towards channel
     cmd_vel.angular.z = sign(channel_dir) * (min_rv_ + (max_rv_ - min_rv_) *
-            straight_up(fabs(channel_dir), angles::from_degrees(10.0), angles::from_degrees(90.0)));
+            straight_up(fabs(channel_dir), angles::from_degrees(0.0), angles::from_degrees(60.0)));
 
-    // TODO: Aufmultipl is bad -> needs to go into slow down factors.
-    // all the *= 0.1 scale badly down, should be one scaling expression
+    // FIXME later use width as main scaling? relate to robot?
+
+    // speed up if there is space
     cmd_vel.linear.x = min_tv_ + (max_tv_ - min_tv_) *
-        straight_up(channel_length, 0.3, 1.0);
+        straight_up(channel_length, 0.3, 2.0);
 
     // go slower forward if we aren't pointing in the right direction
     double bad_direction_tv_scale =
-        straight_down(fabs(channel_dir), angles::from_degrees(10.0), angles::from_degrees(90.0));
+        straight_down(fabs(channel_dir), angles::from_degrees(10.0), angles::from_degrees(60.0));
 
-    // go slower when narrow TODO: maybe only when narrow within where we are (not at end of channel)
-    double close_to_obst_tv_scale = straight_up(channel_width, 0.5, 1.0);
+    // go slower when narrow FIXME later: maybe only when narrow within where we are (not at end of channel)
+    double channel_width_tv_scale = straight_up(channel_width, 0.4, 1.0);
 
     // for now ignore close to wp unless goal.
     double close_to_goal_tv_scale = 1.0;
     double close_to_goal_rv_scale = 1.0;
     if(local_plan_.size() == 1) {   // going for goal
-        close_to_goal_tv_scale = straight_up(dist_to_wp, 0.2, 1.0);
-        close_to_goal_rv_scale = straight_up(fabs(angle_to_wp), angles::from_degrees(10.0),
-                angles::from_degrees(90.0));
-        // Maybe do "states" in here and separate
-        // TODO stop if reached, turn to goal, etc. --> other behviaor, here we go towards goal
-        // -> should be in main fn
-        //
-        // Do we have a problem with goal reached navigation, when very close to goal?
-        // Overshooting gives large da.
+        double dist_to_wp = relToWp.getOrigin().length();
+        double angle_to_wp = atan2(relToWp.getOrigin().y(), relToWp.getOrigin().x());
+        close_to_goal_tv_scale = straight_up(dist_to_wp,
+                2.0 * goal_reached_dist_, 5.0 * goal_reached_dist_);
+        close_to_goal_rv_scale = straight_up(fabs(angle_to_wp),
+                goal_reached_angle_, 5.0 * goal_reached_angle_);
     }
 
+    std::string tv_scale_reason = "none";
     double tv_scale = bad_direction_tv_scale;
-    tv_scale = std::min(tv_scale, close_to_obst_tv_scale);
+    if(tv_scale < 1.0)
+        tv_scale_reason = "bad_direction";
+    tv_scale = std::min(tv_scale, channel_width_tv_scale);
+    if(tv_scale == channel_width_tv_scale)
+        tv_scale_reason = "channel_width";
     tv_scale = std::min(tv_scale, close_to_goal_tv_scale);
+    if(tv_scale == close_to_goal_tv_scale)
+        tv_scale_reason = "close_to_goal";
+    if(tv_scale >= 0.99)
+        tv_scale_reason = "none";
 
+    std::string rv_scale_reason = "none";
     double rv_scale = close_to_goal_rv_scale;
+    if(rv_scale < 1.0)
+        rv_scale_reason = "close_to_goal";
+    if(rv_scale >= 0.99)
+        rv_scale_reason = "none";
 
-    cmd_vel.linear.x *= 0.1 + 0.9 * tv_scale;
-    cmd_vel.angular.z *= 0.1 + 0.9 * rv_scale;
+    cmd_vel.linear.x *= 0.2 + 0.8 * tv_scale;
+    cmd_vel.angular.z *= 0.2 + 0.8 * rv_scale;
 
-    // TODO min values.
-
-    // straightup/down for racing/approaching
-    // limit twist -> scale both if one is too much to get same movement, check min vels
-    // stop first if wrong direction
-    // TODO what info do I need here:
-    // channel width/length
-    // relative channel direction
-    // dist to next target
-    // cur velocities
-    //
-    // What is derived from that?
-    //
+    // Let's make sure we're not below the min values
+    double tv_min_fact = fabs(cmd_vel.linear.x)/min_tv_;
+    // If we're too slow ahead is only OK if we're at least turning
+    // somewhat quickly
+    if(tv_min_fact < 1.0 && fabs(cmd_vel.angular.z) < angles::from_degrees(10)) {
+        // scale up so we get at least one higher.
+        cmd_vel.linear.x /= tv_min_fact;
+        cmd_vel.angular.z /= tv_min_fact;
+    }
+    if(fabs(cmd_vel.linear.x) < stopped_tv_ && fabs(cmd_vel.angular.z) < min_inplace_rv_) {
+        ROS_DEBUG("%s: tv almost 0 and rv below min_inplace_rv_ -> increasing rv", __func__);
+        cmd_vel.angular.z = sign(cmd_vel.angular.z) * min_inplace_rv_;
+        cmd_vel.linear.x = sign(cmd_vel.linear.x) * stopped_tv_;    // drive at least stopped tv
+    }
 
     limitTwist(cmd_vel);
 
-    // TODO turn to goal -> safe to do here if at pose
-    // intermediate points will jump away before
+    status.setChannelFollowChannel(channel_dir, tv_scale_reason, rv_scale_reason);
+
     return true;
+}
+
+void ChannelController::computeVelocityForSafeChannel(
+        const DriveChannel & channel,
+        geometry_msgs::Twist & cmd_vel, ScopedVelocityStatus & status,
+        bool turn_in) const
+{
+    cmd_vel = geometry_msgs::Twist();   // init to 0
+
+    double channel_dir = channel.direction();
+
+    bool backwards = false;
+    // check if channel is behind us - go backwards
+    if(fabs(channel_dir) > angles::from_degrees(90)) {
+        backwards = true;
+        // substract 90 deg to get equivalent forward channel
+        channel_dir = sign(channel_dir) * (fabs(channel_dir) - angles::from_degrees(90.0));
+        // switch dir as we're going backwards
+        channel_dir *= -1.0;
+    }
+    if(!turn_in)
+        channel_dir *= -1.0;
+
+    cmd_vel.linear.x = min_tv_;
+    if(backwards)
+        cmd_vel.linear.x *= -1.0;
+
+    // kinda steer towards channel slowly
+    cmd_vel.angular.z = sign(channel_dir) * (min_rv_ + 0.1 * (max_rv_ - min_rv_) *
+            straight_up(fabs(channel_dir), angles::from_degrees(10.0), angles::from_degrees(90.0)));
+}
+
+bool ChannelController::handleGoalTurn(geometry_msgs::Twist & cmd_vel,
+        const tf::Stamped<tf::Pose> & robotPose, double distToTarget,
+        ScopedVelocityStatus & status)
+{
+    if(state_ != CSGoalTurn) {
+        if(local_plan_.size() != 1) // either already goal reached or not approach goal wp
+            return false;
+
+        if(distToTarget > goal_reached_dist_)   // approaching goal but not near enough yet
+            return false;
+    }
+
+    state_ = CSGoalTurn;   // latch this once we're in here - stay
+
+    // we are at the goal point
+    // as currentWaypointReached didn't trigger: we're not turned to it
+
+    tf::Stamped<tf::Pose> currentWaypoint = local_plan_.front();
+    tf::Pose toWaypoint = robotPose.inverseTimes(currentWaypoint);
+
+    double da = angles::normalize_angle(tf::getYaw(toWaypoint.getRotation())); 
+    double curTv = last_odom_.twist.twist.linear.x;
+    if(fabs(curTv) < stopped_tv_) {
+        cmd_vel.angular.z = sign(da) * (min_inplace_rv_ + (max_rv_ - min_inplace_rv_) *
+                straight_up(fabs(da), angles::from_degrees(10.0), angles::from_degrees(90.0)));
+        status.setAtGoalPosTurnToGoal(da, curTv);
+    } else {    // else: stop (0)
+        status.setAtGoalPosStopToTurn(da, curTv);
+    }
+
+    return true;
+}
+
+double ChannelController::getDistanceAtPose(const tf::Pose & pose, bool* in_bounds) const
+{
+    // determine current dist
+    int pose_x, pose_y;
+    costmap_.worldToMapNoBounds(pose.getOrigin().x(), pose.getOrigin().y(),
+            pose_x, pose_y);
+    if(pose_x < 0 || pose_y < 0 ||
+            pose_x >= (int)voronoi_.getSizeX() || pose_y >= (int)voronoi_.getSizeY()) {
+        if(in_bounds == NULL) {
+            // only warn if in_bounds isn't checked externally
+            ROS_WARN_THROTTLE(1.0, "%s: Pose out of voronoi bounds (%.2f, %.2f) = (%d, %d)", __func__,
+                    pose.getOrigin().x(), pose.getOrigin().y(), pose_x, pose_y);
+        } else {
+            *in_bounds = false;
+        }
+        return 0.0;
+    } 
+    if(in_bounds)  {
+        *in_bounds = true;
+    }
+    float dist = voronoi_.getDistance(pose_x, pose_y);
+    dist *= costmap_.getResolution();
+    return dist;
+}
+
+int ChannelController::getToSafeWaypoint(geometry_msgs::Twist & cmd_vel,
+        const tf::Pose & robotPose, const tf::Pose & relativeTarget,
+        ScopedVelocityStatus & status)
+{
+    if(state_ != CSGetToSafeWaypointDist)   // we're not active
+        return 0;
+
+    ros::Duration activeTime = ros::Time::now() - get_to_safe_waypoint_start_time_;
+    if(activeTime > ros::Duration(max_get_to_safe_dist_time_))
+        return -1;
+
+    // determine current dist
+    bool pose_in_bounds;
+    double dist = getDistanceAtPose(robotPose, &pose_in_bounds);
+    if(!pose_in_bounds) {
+        ROS_ERROR("%s: Robot pose not in bounds", __func__);    // shouldn't happen
+        return -1;
+    }
+
+    // stay active if activeTime < min_get_to_safe_dist_time_ or
+    // we're not at safe waypoint dist
+    if(dist >= safe_waypoint_channel_width_/2.0 &&
+            activeTime >= ros::Duration(min_get_to_safe_dist_time_)) {
+        // out of obst and executed long enough -> we're done
+        state_ = CSFollowChannel;
+        return -2;
+    }
+
+    // actual behavior - choose channels.
+    std::vector<DriveChannel> safe_channels = computeChannels(robotPose, relativeTarget,
+            safe_channel_width_/2.0);
+    if(safe_channels.empty()) {
+        ROS_ERROR("Could find no safe_channels - recovery needed");
+        return -1;
+    }
+
+    int best_idx = -1;
+    if(safe_waypoint_state_ == SWSBestChannel)
+        best_idx = evaluateSafeChannels(safe_channels, false);
+    else if(safe_waypoint_state_ == SWSBestBackwardsChannelTurnIn ||
+            safe_waypoint_state_ == SWSBestBackwardsChannelTurnOut)
+        best_idx = evaluateSafeChannels(safe_channels, true);
+    if(best_idx < 0) {
+        ROS_ERROR("Could not find best safe channel");
+        return -1;
+    }
+
+    visualization_msgs::MarkerArray channelMarkers;
+    channelMarkers.markers.push_back(createChannelMarkers(safe_channels, 0.0, best_idx));
+    pub_markers_.publish(channelMarkers);
+
+    if(safe_waypoint_state_ == SWSBestChannel ||
+            safe_waypoint_state_ == SWSBestBackwardsChannelTurnIn)
+        computeVelocityForSafeChannel(safe_channels[best_idx], cmd_vel, status, true);
+    else if(safe_waypoint_state_ == SWSBestBackwardsChannelTurnOut)
+        computeVelocityForSafeChannel(safe_channels[best_idx], cmd_vel, status, false);
+
+    status.setGetToSafeWaypoint(dist, activeTime.toSec(), safe_waypoint_state_);
+
+    return 1;
+}
+
+std::vector<DriveChannel> ChannelController::computeChannels(const tf::Pose & robotPose,
+        const tf::Pose & relativeTarget, double minDist) const
+{
+    std::vector<DriveChannel> channels;
+    for(double da = -M_PI; da <= M_PI - angles::from_degrees(5.0); da += angles::from_degrees(5.0)) {
+        tf::Pose rotDir(tf::createQuaternionFromYaw(da));
+        // point in da, along up to the whole costmap length
+        tf::Pose relativeTargetDir(relativeTarget.getRotation(),
+                relativeTarget.getOrigin().normalized() *
+                    (costmap_.getSizeInMetersX() + costmap_.getSizeInMetersY()));
+        tf::Pose rotTarget = robotPose * rotDir * relativeTargetDir;
+
+        DriveChannel channel = computeChannel(robotPose, rotTarget, minDist);
+        channel.da_ = da;
+        if(channel.length() > 0)
+            channels.push_back(channel);
+    }
+    return channels;
+}
+
+double ChannelController::computeChannelScore(double da, double dist) const
+{
+    // Scoring is based on da and min_dist:
+    // small da + small dist
+    // - Score by dist and a bit da (already there keep from obst + steer)
+    // small da + large dist
+    // - Score by dist and a bit da (already there keep from obst + steer)
+    // large da + small dist
+    // - Score by da (try to get there first)
+    // large da + large dist
+    // - Score by da (try to get there first)
+    // => Make this a smooth transition
+    double da_score = 0.5 * (cos(fabs(da)) + 1.0);  // [0..1] based on cos -> 1.0 for da = 0.0
+    // keeping dist_score influence very conservative for now.
+    // A 20% wider channel gets a bit more score.
+    double dist_score = straight_up(dist, safe_channel_width_/2.0, 1.2 * safe_waypoint_channel_width_/2.0);
+                //1.0 * costmap_ros_->getInscribedRadius());
+    double score = da_score * dist_score;
+    return score;
+}
+
+int ChannelController::evaluateChannels(const std::vector<DriveChannel> & channels,
+        double distToTarget) const
+{
+    int best_idx = -1;
+    double best_score = -1.0;
+    ROS_DEBUG("dist to target is: %f", distToTarget);
+    for(unsigned int channel_idx = 0; channel_idx < channels.size(); channel_idx++) {
+        const DriveChannel & channel = channels.at(channel_idx);
+        double da = channel.da_;
+        if(fabs(da) > angles::from_degrees(90.0)) {
+            continue;
+        }
+        double dist = channel.min_dist_;
+        if(channel.length() >= distToTarget) {   //  valid
+            //ROS_INFO("Valid channel found with da %f at %zu", da, channels.size() - 1);
+            double score = computeChannelScore(da, dist);
+            if(score > best_score) {
+                best_score = score;
+                best_idx = channel_idx;
+                //ROS_INFO("Better channel found with da %f at %d", best_da, best_idx);
+            }
+        }
+    }
+    //if(best_idx < 0) {
+    //    ROS_WARN("No valid channel found - trying channels at half distToTarget");
+    //    for(unsigned int channel_idx = 0; channel_idx < channels.size(); channel_idx++) {
+    //        const DriveChannel & channel = channels.at(channel_idx);
+    //        double da = channel.da_;
+    //        double dist = channel.min_dist_;
+    //        if(channel.length() >= 0.5 * distToTarget) {   //  valid
+    //            double score = computeChannelScore(da, dist);
+    //            if(score > best_score) {
+    //                best_score = score;
+    //                best_idx = channel_idx;
+    //            }
+    //        }
+    //    }
+    //}
+
+    return best_idx;
+}
+
+int ChannelController::evaluateSafeChannels(const std::vector<DriveChannel> & channels, bool onlyBackwards) const
+{
+    int best_idx = -1;
+    double best_score = -1.0;
+    for(unsigned int channel_idx = 0; channel_idx < channels.size(); channel_idx++) {
+        const DriveChannel & channel = channels.at(channel_idx);
+        double dir = channel.direction();
+        double dist = channel.min_dist_;
+        double length = channel.length();
+        if(onlyBackwards) {
+            if(fabs(dir) < angles::from_degrees(90))
+                continue;
+        }
+        // Scoring is based on dist and length
+        // Last term is added to decide between equal channels
+        double score = straight_up(dist, safe_channel_width_/2.0, safe_channel_width_) +
+            straight_up(length, 0.0, 2.0 * safe_channel_width_) +
+            0.05 * straight_up(dist, 0.0, 10.0);
+        if(score > best_score) {
+            best_score = score;
+            best_idx = channel_idx;
+            //ROS_INFO("Better safe channel found with da %f at %d", best_da, best_idx);
+        }
+    }
+    return best_idx;
 }
 
 
 bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
 {
     cmd_vel = geometry_msgs::Twist();   // init to 0
+    ScopedVelocityStatus velStatus(cmd_vel, pub_status_marker_, pub_sound_, pub_led_, costmap_ros_);
 
-    // True if a valid velocity command was found, false otherwise
-    updateVoronoi();
+    if(!updateVoronoi()) {
+        ROS_ERROR_THROTTLE(1.0, "updateVoronoi failed.");
+        return false;
+    }
 
     if(!localizeGlobalPlan(current_waypoint_)) {
         return false;
@@ -579,14 +968,15 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
         return false;
     }
 
-    // TODO: we should be able to skip/advance to waypoints furhter in the plan if they are reached.
+    // FIXME later: we should be able to skip/advance to waypoints furhter in the plan if they are reached.
     // No need to follow the plan backwards if we somehow got ahead towards goal - only that counts.
     while(!local_plan_.empty() && currentWaypointReached()) {
         current_waypoint_++;
+        last_progress_time_ = ros::Time::now();
         if(!localizeGlobalPlan(current_waypoint_)) {
             return false;
         }
-    } // TODO more efficient, esp for skipping: wayPOintReache(idx)
+    } // FIXME later: more efficient, esp for skipping: wayPOintReache(idx)
 
     if(local_plan_.empty()) {
         return true;    // FIXME At goal, but move_base wants us to say we did a velocity command always
@@ -596,10 +986,28 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
         return false;
     }
 
-    // TODO if there is no channel as our start is in obst: get out of that!
-    // Minimize channels, smaller padding, recovery behaviors
+    if(no_progress_hard_clear_time_ > 0 && 
+            ros::Time::now() - last_progress_time_ > ros::Duration(no_progress_hard_clear_time_)) {
+        ROS_WARN("No progress for %f s - calling /call_clear.", no_progress_hard_clear_time_);
+        std_msgs::Empty e;
+        pub_call_clear_.publish(e);
+        last_progress_time_ = ros::Time::now(); // prevent this happening all the time, essentially reset
 
-    // TODO we must reject this if the local target is not easily reachable/too far away
+        kobuki_msgs::Sound snd;
+        snd.value = kobuki_msgs::Sound::OFF;
+        pub_sound_.publish(snd);
+        return false;
+    }
+
+    // check for local wpt in obstacle: call replanning if that happens
+    bool local_wpt_in_bounds;
+    double dist_at_next_wpt = getDistanceAtPose(local_plan_.front(), &local_wpt_in_bounds);
+    if(local_wpt_in_bounds) {   // out of bounds OK - far away - drive there first
+        if(dist_at_next_wpt <= 0.0) {
+            ROS_WARN_THROTTLE(1.0, "Next waypoint in obstacle - requesting new plan");
+            return false;
+        }
+    }
 
     visualization_msgs::MarkerArray channelMarkers;
 
@@ -610,121 +1018,217 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
     tf::Pose relativeTarget = robot_pose.inverseTimes(currentTarget);
     double distToTarget = relativeTarget.getOrigin().length();
 
-    // need DriveChannel struct (from, to, min_dist, length)
-    // Compute DA from that or store?
-    // + this = fun computeChannels
-
-    std::vector<DriveChannel> channels;
-    int best_idx = -1;
-    double best_da = HUGE_VAL;
-    ROS_INFO("dist to target is: %f", distToTarget);
-    for(double da = -M_PI; da <= M_PI - angles::from_degrees(5.0); da += angles::from_degrees(5.0)) {
-        tf::Pose rotDir(tf::createQuaternionFromYaw(da));
-        // point in da, along up to the whole costmap length
-        tf::Pose relativeTargetDir(relativeTarget.getRotation(),
-                relativeTarget.getOrigin().normalized() *
-                    (costmap_.getSizeInMetersX() + costmap_.getSizeInMetersY()));
-        tf::Pose rotTarget = robot_pose * rotDir * relativeTargetDir;  // FIXME rotDir * relativeTarget?
-
-        DriveChannel channel = computeChannel(robot_pose, rotTarget,
-                costmap_ros_->getInscribedRadius() + 0.05);
-        channels.push_back(channel);
-        if(channel.length() >= distToTarget) {   //  valid
-            //ROS_INFO("Valid channel found with da %f at %zu", da, channels.size() - 1);
-            if(fabs(da) < fabs(best_da)) {
-                best_da = da;
-                best_idx = channels.size() - 1;
-                //ROS_INFO("Better channel found with da %f at %d", best_da, best_idx);
-            }
-        }
+    if(handleGoalTurn(cmd_vel, robot_pose, distToTarget, velStatus)) {
+        // don't compute a channel, just turn to goal
+        channelMarkers.markers.push_back(createChannelMarkers(std::vector<DriveChannel>(), 0.0, -1));
+        pub_markers_.publish(channelMarkers);   // pub empty channels
+        return true;
     }
-    // Channel selection: Everything that is long enough to reach a waypoint ahead
-    // free dist at waypoint should be >= dist along channel length to wpt (i.e. no split path)
-    //
-    // Maybe split this between: Drivable/safe channels and channels that have goal in reach
-    // Then select from goal channels - warn if only drivable left (shouldnt need to turn to much)
-    // -> sleect channel based on da + width/length --> SCORE
-    // -> Maybe channels should have distToWp and da as vars?
-    // -> small da waaay important when small distToTarget
-    // -> with larget distToTarget da small-ish -> look at width, da large-ish look at da
-    // -> Usually prefer large width channels
-    // --> if aiming correctly free dist, otherwise aim for da.
 
-    // DEBUG: Check channel selection and drive to channel independently.
+    int getting_to_safe_wpt = getToSafeWaypoint(cmd_vel, robot_pose, relativeTarget, velStatus);
+    if(getting_to_safe_wpt == 1) {
+        return true;
+    } else if(getting_to_safe_wpt == -1) {
+        ROS_ERROR("getToSafeWaypoint failed.");
+        velStatus.setNoSafeChannel();
+        return false;
+    } else if(getting_to_safe_wpt == -2) {
+        ROS_INFO("getToSafeWaypoint succeeded - querying new global plan.");
+        return false;
+    }
 
-    // TODO skipping waypoints -> later
+    std::vector<DriveChannel> channels = computeChannels(robot_pose, relativeTarget,
+            safe_waypoint_channel_width_/2.0);
+    if(channels.size() == 0) {
+        ROS_WARN("No safe_waypoint_channel_width channels found - switching to CSGetToSafeWaypointDist");
+        state_ = CSGetToSafeWaypointDist;
+        double prob = drand48();
+        if(prob < 0.35)
+            safe_waypoint_state_ = SWSBestBackwardsChannelTurnIn;
+        else if(prob < 0.7)
+            safe_waypoint_state_ = SWSBestBackwardsChannelTurnOut;
+        else
+            safe_waypoint_state_ = SWSBestChannel;
+        get_to_safe_waypoint_start_time_ = ros::Time::now();
+        // just enable behavior here, next iteration will execute.
+        return true;
+    }
 
-    // TODO really distToTarget, what if tartget is behind corner? There should be a waypoint ;)
-    // Maybe better score like: low da, waypoint(S) - latest waypoint, distance
+    int best_idx = evaluateChannels(channels, distToTarget);
+
     channelMarkers.markers.push_back(createChannelMarkers(channels, distToTarget, best_idx));
     pub_markers_.publish(channelMarkers);
-
-    // why no channel found sometimes???
 
     // no valid channel found -> replan global please
     if(best_idx < 0) {
         ROS_WARN_THROTTLE(0.5, "No valid channel found.");
+        velStatus.setNoValidChannel();
         return false;
     }
 
-    ROS_INFO("Best channel found with da %f at %d", best_da, best_idx);
+    ROS_DEBUG("Best channel found with da %.0f deg width: %.1f m",
+            angles::to_degrees(channels[best_idx].da_),
+            2.0 * channels[best_idx].min_dist_);
 
-    bool foundChannelCmd = computeVelocityForChannel(channels[best_idx], cmd_vel);
+    bool foundChannelCmd = computeVelocityForChannel(channels[best_idx], cmd_vel, velStatus);
+    if(!foundChannelCmd) {
+        ROS_ERROR("%s: Could not determine channel velocity", __func__);
+    }
 
     last_cmd_vel_time_ = ros::Time::now();
     return foundChannelCmd;
+}
 
-    // Now: How would I use/judge channels as input interface
-    // -> Read this and decide on channel fns I need.
-    // -> discuss and Do/impl
-    // -> visualize all
-    //
-    // Primary channel:
-    // - Drive to waypoint directly
-    // - Free at least until waypoint (more unnec?)
-    // - if not: Take free channel with least angle diff to wpt
-    // -> how long must that be? Or mix angle to wpt + dist?
-    // - chan must reach wpt, if too short: problem.
-    // - what if too short, but still has some length? GO there or use side-channel?
-    // -> Problem with wide-spreach wpts around corner.
-    //
-    // Secondary channel:
-    // - must "reach" same waypoint (how defined with not-straight-to-wp channels?) as primary
-    // - "reach" = dist to target wpt at end must be free dist (i.e. don't have obstacle in between), no "other" channel/gap
-    // - shouldn't divert too much (don't drive backwards, because there it's free)
-    // - judges: more free space to sides, longer (after waypoint?)
-    // - judge channel width (not min clearnec)
-    //
 
-    // if no good channel to next nicely distant waypoint: return false for new global plan
-    // maybe we'd be OK if we can't reach the next waypoint, but a later on and manually skip the in between ones
-    // What is our next target waypoint? Do we need something different than the
-    // waypoint_reached_dist that adcanves waypoints OR is this the same logic/idea?
-    // Does it make sense to "not have reached" a locally near waypoint, but
-    // still aim for ones that's further away?
+ChannelController::ScopedVelocityStatus::ScopedVelocityStatus(geometry_msgs::Twist & cmdVel,
+        ros::Publisher & pubMarkers, ros::Publisher & pubSound, ros::Publisher & pubLED,
+        const costmap_2d::Costmap2DROS* costmap) :
+    cmd_vel(cmdVel), pub_markers(pubMarkers), pub_sound(pubSound), pub_led(pubLED), costmap(costmap)
+{
+    status << std::setprecision(2) << std::fixed;
+    state = CSNone;
+}
 
-    // - adjust params to allow replanning
-    // - we shuold at some point say that we can't computeVelocityCommands
-    // if the global plan/next local plan waypoint is too far away from us and its not easily reachable
+ChannelController::ScopedVelocityStatus::~ScopedVelocityStatus()
+{
+    publishStatus();
+}
 
-    // Now: Compute all minimal-width channels (w/ padding, etc.) and display them.
+void ChannelController::ScopedVelocityStatus::setAtGoalPosStopToTurn(double angle_to_goal, double cur_tv)
+{
+    status << "At Goal Pos" << std::endl <<
+        "-> Stop to turn" << std::endl <<
+        "Angle: " << angle_to_goal << " Cur TV: " << cur_tv << std::endl;
+    state = CSGoalTurn;
+}
 
-    // Define what a channel is
-    // - local/min channel with braking? - Start simple, but extensible
-    // - the max channel that steers towards min channel and will basically expand around min channel
-    //  to speed up if poss -> but always guarantee min channel reachable if poss
-    //
-    //  Main goal: everything reachable with braking/slowest speed is something that we can reach (if slowly)
-    //  Secondary: If there is connected space around our min channel we speed up
-    //  Ternary: Maybe drive a "bend" around the min channel (e.g. farther away from wall) to get more speed even if we leave the min channel
-    //
-    //  Define what makes a min/max channel parameter-wise -> What is input, what is output param of channel?
-    // Then impl and display the channel computations.
-    //
-    // Must judge the "best" channels given those impls.
-    // Finally - derive control comamnds for driving to channel.
+void ChannelController::ScopedVelocityStatus::setAtGoalPosTurnToGoal(double angle_to_goal, double cur_tv)
+{
+    status << "At Goal Pos" << std::endl <<
+        "-> Turn to goal" << std::endl <<
+        "Angle: " << angle_to_goal << " Cur TV: " << cur_tv << std::endl;
+    state = CSGoalTurn;
+}
 
-    return true;
+void ChannelController::ScopedVelocityStatus::setChannelStopToTurn(double rel_channel_dir, double cur_tv)
+{
+    status << "Follow Channel" << std::endl <<
+        "-> Stop to turn" << std::endl <<
+        "Angle: " << rel_channel_dir << " Cur TV: " << cur_tv << std::endl;
+    state = CSFollowChannel;
+}
+
+void ChannelController::ScopedVelocityStatus::setChannelTurnToChannel(double rel_channel_dir, double cur_tv)
+{
+    status << "Follow Channel" << std::endl <<
+        "-> Turn to channel" << std::endl <<
+        "Angle: " << rel_channel_dir << " Cur TV: " << cur_tv << std::endl;
+    state = CSFollowChannel;
+}
+
+void ChannelController::ScopedVelocityStatus::setChannelFollowChannel(double rel_channel_dir,
+        const std::string & tv_scale, const std::string & rv_scale)
+{
+    status << "Follow Channel" << std::endl <<
+        "Angle: " << rel_channel_dir << std::endl <<
+        "TV limited: " << tv_scale << std::endl <<
+        "RV limited: " << rv_scale << std::endl;
+    state = CSFollowChannel;
+}
+
+void ChannelController::ScopedVelocityStatus::setNoValidChannel()
+{
+    status << "No valid channel" << std::endl;
+    state = CSNone;
+}
+
+void ChannelController::ScopedVelocityStatus::setNoSafeChannel()
+{
+    status << "No safe channel" << std::endl;
+    state = CSNone;
+}
+
+void ChannelController::ScopedVelocityStatus::setGetToSafeWaypoint(double cur_dist, double active_time, enum SafeWaypointState safe_waypoint_st)
+{
+    status << "Get To Safe WPT" << std::endl;
+    switch(safe_waypoint_st) {
+        case SWSBestChannel:
+            status << "-> Best Channel" << std::endl;
+            break;
+        case SWSBestBackwardsChannelTurnIn:
+            status << "-> Best Backwards In" << std::endl;
+            break;
+        case SWSBestBackwardsChannelTurnOut:
+            status << "-> Best Backwards Out" << std::endl;
+            break;
+        default:
+            status << "-> ERROR undefined: " << safe_waypoint_st << std::endl;
+            break;
+    }
+    status << "Cur Safe Dist: " << cur_dist << std::endl <<
+        "Active for: " << active_time << " s" << std::endl;
+    state = CSGetToSafeWaypointDist;
+    safe_waypoint_state = safe_waypoint_st;
+}
+
+void ChannelController::ScopedVelocityStatus::publishStatus()
+{
+    status << "TV: " << cmd_vel.linear.x << " m/s" << std::endl <<
+        "RV: " << angles::to_degrees(cmd_vel.angular.z) << " deg/s" << std::endl;
+
+    visualization_msgs::Marker statusMarker;
+    statusMarker.header.stamp = ros::Time(0);
+    statusMarker.header.frame_id = costmap->getGlobalFrameID();
+    statusMarker.ns = "status";
+    statusMarker.id = 0;
+    statusMarker.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
+    statusMarker.action = visualization_msgs::Marker::ADD;
+    statusMarker.text = status.str();
+    statusMarker.scale.z = 0.25;
+    // put status marker near robot
+    tf::Stamped<tf::Pose> robot_pose;
+    if(!costmap->getRobotPose(robot_pose)) {
+        statusMarker.pose.orientation.w = 1.0;
+    } else {
+        tf::poseTFToMsg(robot_pose, statusMarker.pose);
+    }
+    statusMarker.pose.position.x += 1.0;
+    statusMarker.pose.position.z += 1.0;
+    statusMarker.color.r = 1.0;
+    statusMarker.color.g = 1.0;
+    statusMarker.color.b = 0.0;
+    statusMarker.color.a = 1.0;
+    statusMarker.lifetime = ros::Duration(0);
+    statusMarker.frame_locked = false;
+
+    pub_markers.publish(statusMarker);
+
+    kobuki_msgs::Led led;
+    if(cmd_vel.linear.x == 0 && cmd_vel.angular.z == 0) {   // for some reason we're stopping
+        led.value = kobuki_msgs::Led::BLACK;
+    } else if(state == CSFollowChannel) {
+        led.value = kobuki_msgs::Led::GREEN;
+    } else if(state == CSGoalTurn) {
+        led.value = kobuki_msgs::Led::ORANGE;
+    } else if(state == CSGetToSafeWaypointDist) {
+        led.value = kobuki_msgs::Led::RED;
+    }
+    pub_led.publish(led);
+
+    static ros::Time last_sound_time = ros::Time(0);
+    if(ros::Time::now() - last_sound_time > ros::Duration(1.0)) {
+        kobuki_msgs::Sound sound;
+        sound.value = 0;
+        if(state == CSGetToSafeWaypointDist) {
+            sound.value = kobuki_msgs::Sound::RECHARGE;
+        } else if(state == CSGoalTurn) {
+            sound.value = kobuki_msgs::Sound::BUTTON;
+        }
+        if(sound.value > 0) {
+            pub_sound.publish(sound);
+            last_sound_time = ros::Time::now();
+        }
+    }
 }
 
 }
