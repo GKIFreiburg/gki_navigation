@@ -212,6 +212,11 @@ namespace channel_controller
             /// Minimum channel width that is allowed at all
             double safe_channel_width_;
 
+            double max_channel_length_;
+
+            double channel_score_da_;
+            double channel_score_dist_;
+
             double min_get_to_safe_dist_time_;
             double max_get_to_safe_dist_time_;
 

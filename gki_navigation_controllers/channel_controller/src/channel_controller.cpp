@@ -51,6 +51,11 @@ void ChannelController::initialize(std::string name,
 
     nhPriv.param("safe_waypoint_channel_width", safe_waypoint_channel_width_, 0.5);
     nhPriv.param("safe_channel_width", safe_channel_width_, 0.4);
+    nhPriv.param("channel_score_da", channel_score_da_, 1.0);
+    nhPriv.param("channel_score_dist", channel_score_dist_, 0.3);
+
+    nhPriv.param("max_channel_length", max_channel_length_, 3.0);
+
     nhPriv.param("min_get_to_safe_dist_time", min_get_to_safe_dist_time_, 3.0);
     nhPriv.param("max_get_to_safe_dist_time", max_get_to_safe_dist_time_, 10.0);
 
@@ -79,6 +84,8 @@ void ChannelController::initialize(std::string name,
 
     ROS_INFO("safe_waypoint_channel_width: %f", safe_waypoint_channel_width_);
     ROS_INFO("safe_channel_width: %f", safe_channel_width_);
+    ROS_INFO("channel_score_da: %f", channel_score_da_);
+    ROS_INFO("channel_score_dist: %f", channel_score_dist_);
     ROS_INFO("min_get_to_safe_dist_time: %f", min_get_to_safe_dist_time_);
     ROS_INFO("max_get_to_safe_dist_time: %f", max_get_to_safe_dist_time_);
     ROS_INFO("waypoint_reached_dist: %f", waypoint_reached_dist_);
@@ -588,6 +595,18 @@ void ChannelController::limitTwist(geometry_msgs::Twist & cmd_vel) const
 
 bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, geometry_msgs::Twist & cmd_vel, ScopedVelocityStatus & status) const
 {
+    // TODO make sure that channel length are until free and not until waypoint
+    // Maybe only if there is no more waypoints near it limit for corner racing
+    // BUT maybe we just stop quickly???
+    // goal approach is scaled with speed already
+    // TODO final speed advise is safty 
+    // 2. think about channel selection as in what do we want/need
+    // a) for close quarters
+    // b) for high speed open area (later, also need to check how global plans look there)
+    // c) dont tune too much towards global plan - dynamic obst are NOT in there and the dist counts
+    // -- more: think about why channels with dist arent on global plan, can we pause and observe?
+    // 3. redo speed selection with fast and safe
+
     ROS_ASSERT(!local_plan_.empty());
     cmd_vel = geometry_msgs::Twist();   // init to 0
 
@@ -847,7 +866,7 @@ std::vector<DriveChannel> ChannelController::computeChannels(const tf::Pose & ro
         // point in da, along up to the whole costmap length
         tf::Pose relativeTargetDir(relativeTarget.getRotation(),
                 relativeTarget.getOrigin().normalized() *
-                    (costmap_.getSizeInMetersX() + costmap_.getSizeInMetersY()));
+                    max_channel_length_);
         tf::Pose rotTarget = robotPose * rotDir * relativeTargetDir;
 
         DriveChannel channel = computeChannel(robotPose, rotTarget, minDist);
@@ -875,7 +894,7 @@ double ChannelController::computeChannelScore(double da, double dist) const
     // A 20% wider channel gets a bit more score.
     double dist_score = straight_up(dist, safe_channel_width_/2.0, 1.2 * safe_waypoint_channel_width_/2.0);
                 //1.0 * costmap_ros_->getInscribedRadius());
-    double score = da_score * dist_score;
+    double score = channel_score_da_ * da_score + channel_score_dist_ * dist_score;
     return score;
 }
 
