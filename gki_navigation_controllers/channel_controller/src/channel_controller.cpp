@@ -548,12 +548,23 @@ void ChannelController::odometryCallback(const nav_msgs::Odometry & odom)
 
 void ChannelController::limitTwist(geometry_msgs::Twist & cmd_vel) const
 {
+    return; // HACK, currently leads to accelerations
+    // Whats the point of this fn: Basically prevent the impossible
+    // When we set a tv/rv traj, we still drive on that even if one
+    // of the values doesn't work
+    // just that we drive on it slower.
+    // That's what the result should be. Must make sure that always happens, especially
+    // when avoiding obstacles/braking
+    // Very important for collision avoidance.
+
     double cur_tv = last_odom_.twist.twist.linear.x;
     double cur_rv = last_odom_.twist.twist.angular.z;
 
-    double dt = (ros::Time::now() - last_cmd_vel_time_).toSec();  // estimated dt for commands
+    // TODO dead reckoning option
+    //double dt = (ros::Time::now() - last_cmd_vel_time_).toSec();  // estimated dt for commands
+    double dt = (ros::Time::now() - last_odom_.header.stamp).toSec();  // estimated dt for commands
     // If we haven't send commands for a while, we'll get an initial "kick"
-    // with a large dt
+    // with a large dt, this should be OK
     double dx_max = max_accel_tv_ * dt;
     double dth_max = max_accel_rv_ * dt;
 
@@ -570,26 +581,38 @@ void ChannelController::limitTwist(geometry_msgs::Twist & cmd_vel) const
 
     // scale both for same trajectory
     if(twist_scale < 1.0) {
-        geometry_msgs::Twist new_cmd_vel = cmd_vel;
-        new_cmd_vel.linear.x = twist_scale * cmd_vel.linear.x;
-        new_cmd_vel.angular.z = twist_scale * cmd_vel.angular.z;
-        //// check mins
-        //// FIXME Not relevant when scaling here?
-        //// -> we'd have a large delta anyways...
-        //if(fabs(cmd_vel.linear.x) < stopped_tv_) {
-        //    if(fabs(new_cmd_vel.angular.z) < min_inplace_rv_) {
-        //        new_cmd_vel.angular.z = sign(cmd_vel.angular.z) * min_inplace_rv_;
-        //    }
-        //} else {
-        //    if(fabs(new_cmd_vel.linear.x) < min_tv_)
-        //        new_cmd_vel.linear.x = sign(cmd_vel.linear.x) * min_tv_;
-        //    if(fabs(new_cmd_vel.angular.z) < min_rv_)
-        //        new_cmd_vel.angular.z = sign(cmd_vel.angular.z) * min_rv_;
-        //}
-        ROS_DEBUG("%s: Scaling cmd vel from %f, %f -> %f %f", __func__,
-                cmd_vel.linear.x, cmd_vel.angular.z,
-                new_cmd_vel.linear.x, new_cmd_vel.angular.z);
-        cmd_vel = new_cmd_vel;
+        // braking = we set a lower absolute speed OR we even reverse the speed
+        if(fabs(cmd_vel.linear.x) < fabs(cur_tv) || (cmd_vel.linear.x * cur_tv) < 0) {
+            ROS_WARN_THROTTLE(1.0, "Not scaling twist to accel limits as we are braking: old tv: %f target tv: %f", cur_tv, cmd_vel.linear.x);
+        } else {
+            geometry_msgs::Twist new_cmd_vel = cmd_vel;
+            new_cmd_vel.linear.x = cur_tv + twist_scale * 
+                (cmd_vel.linear.x - cur_tv);
+            new_cmd_vel.angular.z = cur_rv + twist_scale *
+                (cmd_vel.angular.z - cur_rv);
+                //twist_scale * cmd_vel.angular.z;
+            //// check mins
+            //// FIXME Not relevant when scaling here?
+            //// -> we'd have a large delta anyways...
+            //if(fabs(cmd_vel.linear.x) < stopped_tv_) {
+            //    if(fabs(new_cmd_vel.angular.z) < min_inplace_rv_) {
+            //        new_cmd_vel.angular.z = sign(cmd_vel.angular.z) * min_inplace_rv_;
+            //    }
+            //} else {
+            //    if(fabs(new_cmd_vel.linear.x) < min_tv_)
+            //        new_cmd_vel.linear.x = sign(cmd_vel.linear.x) * min_tv_;
+            //    if(fabs(new_cmd_vel.angular.z) < min_rv_)
+            //        new_cmd_vel.angular.z = sign(cmd_vel.angular.z) * min_rv_;
+            //}
+            ROS_DEBUG("%s: Scaling cmd vel from %f, %f -> %f %f", __func__,
+                    cmd_vel.linear.x, cmd_vel.angular.z,
+                    new_cmd_vel.linear.x, new_cmd_vel.angular.z);
+            ROS_DEBUG("%s: cur tv: %f target tv: %f, cur rv: %f, target rv: %f", __func__,
+                    cur_tv, cmd_vel.linear.x, cur_rv, cmd_vel.angular.z);
+            ROS_DEBUG("%s: dt: %f, dx_max: %f, dth_max: %f", __func__,
+                    dt, dx_max, dth_max);
+            cmd_vel = new_cmd_vel;
+        }
     }
 }
 
@@ -639,9 +662,10 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
 
     // FIXME later use width as main scaling? relate to robot?
 
+    // TODO align those to max values with time
+
     // speed up if there is space
-    cmd_vel.linear.x = min_tv_ + (max_tv_ - min_tv_) *
-        straight_up(channel_length, 0.3, 2.0);
+    double channel_length_tv_scale = straight_up(channel_length, 0.3, 2.0);
 
     // go slower forward if we aren't pointing in the right direction
     double bad_direction_tv_scale =
@@ -666,6 +690,9 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
     double tv_scale = bad_direction_tv_scale;
     if(tv_scale < 1.0)
         tv_scale_reason = "bad_direction";
+    tv_scale = std::min(tv_scale, channel_length_tv_scale);
+    if(tv_scale == channel_length_tv_scale)
+        tv_scale_reason = "channel_length";
     tv_scale = std::min(tv_scale, channel_width_tv_scale);
     if(tv_scale == channel_width_tv_scale)
         tv_scale_reason = "channel_width";
@@ -682,7 +709,11 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
     if(rv_scale >= 0.99)
         rv_scale_reason = "none";
 
-    cmd_vel.linear.x *= 0.2 + 0.8 * tv_scale;
+    // TODO the relationship and scaling for rv/tv should more use
+    // absolute values matched to the max values
+    // not just a factor of the max, i.e. high max rv will turn to rapidly
+    // when tv max isn't that high, i.e. the combination isn't good.
+    cmd_vel.linear.x = min_tv_ + (max_tv_ - min_tv_) * tv_scale;
     cmd_vel.angular.z *= 0.2 + 0.8 * rv_scale;
 
     // Let's make sure we're not below the min values
