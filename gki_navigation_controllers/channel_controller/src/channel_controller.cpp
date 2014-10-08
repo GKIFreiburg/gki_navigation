@@ -556,6 +556,16 @@ void ChannelController::limitTwist(geometry_msgs::Twist & cmd_vel) const
     // when avoiding obstacles/braking
     // Very important for collision avoidance.
 
+    // FIXME Zerg Hack, this should be done properly
+    // assuming no max_accel_rv
+    //
+    // If tv is small, we are either fast and braking hard
+    // or we are slow and accelerating
+    // In both cases, there is no need to limit.
+    if(fabs(cmd_vel.linear.x) < 2.0 * min_tv_) {
+        return;
+    }
+
     double cur_tv = last_odom_.twist.twist.linear.x;
     double cur_rv = last_odom_.twist.twist.angular.z;
 
@@ -619,6 +629,9 @@ void ChannelController::limitTwist(geometry_msgs::Twist & cmd_vel) const
             //new_cmd_vel.angular.z = cur_rv + twist_scale *
             //    (cmd_vel.angular.z - cur_rv);
             //    //twist_scale * cmd_vel.angular.z;
+
+            // TODO never scale at/near min vels
+            // never scale to/near min vels
 
             //// check mins
             //// FIXME Not relevant when scaling here?
