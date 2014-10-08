@@ -197,6 +197,8 @@ namespace channel_controller
 
             ros::Time last_progress_time_;
 
+            ros::Time goal_turn_start_time_;
+
             enum ChannelControllerState state_;
             enum SafeWaypointState safe_waypoint_state_;
 
@@ -216,6 +218,7 @@ namespace channel_controller
              * If we get to max_get_to_safe_dist_time_ we need recoveries.
              */
             double safe_waypoint_channel_width_;
+            double safe_waypoint_channel_width_at_max_tv_;
             /// Minimum channel width that is allowed at all
             double safe_channel_width_;
 

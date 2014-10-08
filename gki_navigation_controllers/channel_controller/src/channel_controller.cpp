@@ -53,6 +53,7 @@ void ChannelController::initialize(std::string name,
     nhPriv.param("use_costmap", use_costmap_, true);
 
     nhPriv.param("safe_waypoint_channel_width", safe_waypoint_channel_width_, 0.5);
+    nhPriv.param("safe_waypoint_channel_width_at_max_tv", safe_waypoint_channel_width_at_max_tv_, 0.5);
     nhPriv.param("safe_channel_width", safe_channel_width_, 0.4);
     nhPriv.param("channel_score_da", channel_score_da_, 1.0);
     nhPriv.param("channel_score_dist", channel_score_dist_, 0.3);
@@ -89,12 +90,14 @@ void ChannelController::initialize(std::string name,
     ROS_INFO("use_laser: %d", use_laser_);
     ROS_INFO("use_costmap: %d", use_costmap_);
     ROS_INFO("safe_waypoint_channel_width: %f", safe_waypoint_channel_width_);
+    ROS_INFO("safe_waypoint_channel_width_at_max_tv: %f", safe_waypoint_channel_width_at_max_tv_);
     ROS_INFO("safe_channel_width: %f", safe_channel_width_);
     ROS_INFO("channel_score_da: %f", channel_score_da_);
     ROS_INFO("channel_score_dist: %f", channel_score_dist_);
     ROS_INFO("min_get_to_safe_dist_time: %f", min_get_to_safe_dist_time_);
     ROS_INFO("max_get_to_safe_dist_time: %f", max_get_to_safe_dist_time_);
     ROS_INFO("waypoint_reached_dist: %f", waypoint_reached_dist_);
+    ROS_INFO("waypoint_reached_dist_at_max_tv: %f", waypoint_reached_dist_at_max_tv_);
     ROS_INFO("waypoint_reached_angle: %f", waypoint_reached_angle_);
     ROS_INFO("goal_reached_dist: %f", goal_reached_dist_);
     ROS_INFO("goal_reached_angle: %f", goal_reached_angle_);
@@ -352,7 +355,11 @@ bool ChannelController::currentWaypointReached() const
     double angleThreshold = waypoint_reached_angle_;
     if(local_plan_.size() == 1) {   // only 1 wp left -> goal wp
         distThreshold = goal_reached_dist_;
-        angleThreshold = goal_reached_angle_;
+        if((ros::Time::now() - goal_turn_start_time_) < ros::Duration(5.0)) {
+            angleThreshold = goal_reached_angle_/4.0;
+        } else {
+            angleThreshold = goal_reached_angle_;
+        }
     }
 
     if(state_ != CSGoalTurn) {
@@ -763,7 +770,8 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
         straight_down(fabs(channel_dir), angles::from_degrees(10.0), angles::from_degrees(60.0));
 
     // go slower when narrow FIXME later: maybe only when narrow within where we are (not at end of channel)
-    double channel_width_tv_scale = straight_up(channel_width, 0.4, 1.0);
+    double channel_width_tv_scale = straight_up(channel_width,
+                safe_waypoint_channel_width_, safe_waypoint_channel_width_at_max_tv_);
 
     // for now ignore close to wp unless goal.
     double close_to_goal_tv_scale = 1.0;
@@ -869,6 +877,8 @@ bool ChannelController::handleGoalTurn(geometry_msgs::Twist & cmd_vel,
 
         if(distToTarget > goal_reached_dist_)   // approaching goal but not near enough yet
             return false;
+
+        goal_turn_start_time_ = ros::Time::now();
     }
 
     state_ = CSGoalTurn;   // latch this once we're in here - stay
@@ -1013,10 +1023,10 @@ double ChannelController::computeChannelScore(double da, double dist) const
     // - Score by da (try to get there first)
     // => Make this a smooth transition
     double da_score = 0.5 * (cos(fabs(da)) + 1.0);  // [0..1] based on cos -> 1.0 for da = 0.0
-    // keeping dist_score influence very conservative for now.
-    // A 20% wider channel gets a bit more score.
-    double dist_score = straight_up(dist, safe_channel_width_/2.0, 1.2 * safe_waypoint_channel_width_/2.0);
-                //1.0 * costmap_ros_->getInscribedRadius());
+    //// keeping dist_score influence very conservative for now.
+    //// A 20% wider channel gets a bit more score.
+    //double dist_score = straight_up(dist, safe_channel_width_/2.0, 1.2 * safe_waypoint_channel_width_/2.0);
+    double dist_score = straight_up(dist, safe_waypoint_channel_width_/2.0, safe_waypoint_channel_width_at_max_tv_/2.0);
     double score = channel_score_da_ * da_score + channel_score_dist_ * dist_score;
     return score;
 }
@@ -1179,8 +1189,22 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
         return false;
     }
 
+    // TODO must occur everywhere, where we use this for scaling, etc.
+    // check locations
+    // HERE, safe waypoint, scoring
+    double cur_tv = last_odom_.twist.twist.linear.x;
+    double min_channel_width = safe_waypoint_channel_width_ +
+        (safe_waypoint_channel_width_at_max_tv_ - safe_waypoint_channel_width_) *
+        straight_up(cur_tv, min_tv_, max_tv_);
+    // TODO need to be more aggressive here, otherwise never channels
+    // TODO aspect ratio channels?
     std::vector<DriveChannel> channels = computeChannels(robot_pose, relativeTarget,
-            safe_waypoint_channel_width_/2.0);
+            min_channel_width/2.0);
+    // aspect could be for socring
+    // Maybe something here: best ideal chans, then go down in what we need - drive those more convervative.
+    // more convervative can punish width a lot
+    if(channels.size() == 0)
+        channels = computeChannels(robot_pose, relativeTarget, safe_waypoint_channel_width_/2.0);
     if(channels.size() == 0) {
         ROS_WARN("No safe_waypoint_channel_width channels found - switching to CSGetToSafeWaypointDist");
         state_ = CSGetToSafeWaypointDist;
