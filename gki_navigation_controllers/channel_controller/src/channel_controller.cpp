@@ -9,6 +9,7 @@
 #include <kobuki_msgs/Led.h>
 #include <boost/foreach.hpp>
 #include <std_msgs/Empty.h>
+#include <algorithm>
 #define forEach BOOST_FOREACH
 
 namespace channel_controller
@@ -125,7 +126,7 @@ void ChannelController::initialize(std::string name,
     pub_call_clear_ = nh.advertise<std_msgs::Empty>("/call_clear", 1);
 
     sub_odom_ = nh.subscribe("odom", 2, &ChannelController::odometryCallback, this);
-    sub_laser_ = nh.subscribe("base_scan_filtered", 2, &ChannelController::laserCallback, this);
+    sub_laser_ = nh.subscribe("base_scan", 3, &ChannelController::laserCallback, this);
 
     //updateVoronoi();
 
@@ -152,6 +153,7 @@ bool ChannelController::updateVoronoi()
     float validRangesFrac = 0.0;
     if(use_laser_) {
         double dt = (ros::Time::now() - last_laser_.header.stamp).toSec();
+        //printf("LASER AGE: %f\n", dt);
         if(dt > 0.2) {
             ROS_ERROR("%s: Laser too old - age is: %f", __func__, dt);
             return false;
@@ -159,6 +161,11 @@ bool ChannelController::updateVoronoi()
         // get tf from laser to costmap/voronoi frame
         tf::StampedTransform transform;
         try {
+            if(!tf_->waitForTransform(costmap_ros_->getGlobalFrameID(),
+                    last_laser_.header.frame_id, last_laser_.header.stamp, ros::Duration(0.1))) {
+                ROS_ERROR("Current Laser TF not available");
+                return false;
+            }
             tf_->lookupTransform(costmap_ros_->getGlobalFrameID(),
                     last_laser_.header.frame_id, last_laser_.header.stamp, transform);
         } catch(tf::TransformException & e) {
@@ -166,7 +173,9 @@ bool ChannelController::updateVoronoi()
             return false;
         }
         unsigned int validRanges = 0;   // to check if we got actual data, i.e. Go drive!
-        for(unsigned int i = 0; i < last_laser_.ranges.size(); i++) {
+        unsigned int endIdx = last_laser_.ranges.size();
+        endIdx = std::min(endIdx, 1000u); // start/end from index filter params
+        for(unsigned int i = 80; i < endIdx; i++) {
             if(last_laser_.ranges[i] <= last_laser_.range_min || last_laser_.ranges[i] >= last_laser_.range_max)
                 continue;
             validRanges++;
@@ -287,7 +296,7 @@ bool ChannelController::isGoalReached()
     double cur_tv = last_odom_.twist.twist.linear.x;
     double cur_rv = last_odom_.twist.twist.angular.z;
     if(current_waypoint_ >= global_plan_.size() &&
-            fabs(cur_tv) < stopped_tv_ && fabs(cur_rv) < stopped_rv_) {
+            fabs(cur_tv) < stopped_tv_ && fabs(cur_rv) < 2.0*min_inplace_rv_) {
         ROS_INFO("ChannelController: Goal Reached!");
         kobuki_msgs::Sound sound;
         sound.value = kobuki_msgs::Sound::CLEANINGEND;
@@ -356,7 +365,7 @@ bool ChannelController::currentWaypointReached() const
     if(local_plan_.size() == 1) {   // only 1 wp left -> goal wp
         distThreshold = goal_reached_dist_;
         if((ros::Time::now() - goal_turn_start_time_) < ros::Duration(5.0)) {
-            angleThreshold = goal_reached_angle_/4.0;
+            angleThreshold = goal_reached_angle_/2.0;
         } else {
             angleThreshold = goal_reached_angle_;
         }
@@ -625,8 +634,12 @@ void ChannelController::limitTwist(geometry_msgs::Twist & cmd_vel) const
     double cur_rv = last_odom_.twist.twist.angular.z;
 
     if(cur_tv * cmd_vel.linear.x < 0) {
-        ROS_ERROR_THROTTLE(1.0, "%s: TV changes sign, cur: %f, target: %f - cannot handle this, not limiting!",
-                __func__, cur_tv, cmd_vel.linear.x);
+        if(fabs(cur_tv) < min_tv_) {    // special case near zero, no error
+            cur_tv = 0.0;
+        } else {
+            ROS_ERROR_THROTTLE(1.0, "%s: TV changes sign, cur: %f, target: %f - cannot handle this, not limiting!",
+                    __func__, cur_tv, cmd_vel.linear.x);
+        }
         return;
     }
 
@@ -659,7 +672,7 @@ void ChannelController::limitTwist(geometry_msgs::Twist & cmd_vel) const
     if(twist_scale < 1.0) {
         // braking = we set a lower absolute speed OR we even reverse the speed
         if(fabs(cmd_vel.linear.x) < fabs(cur_tv) || (cmd_vel.linear.x * cur_tv) < 0) {
-            ROS_WARN_THROTTLE(1.0, "Not scaling twist to accel limits as we are braking: old tv: %f target tv: %f", cur_tv, cmd_vel.linear.x);
+            ROS_DEBUG_THROTTLE(1.0, "Not scaling twist to accel limits as we are braking: old tv: %f target tv: %f", cur_tv, cmd_vel.linear.x);
         } else {
             geometry_msgs::Twist new_cmd_vel = cmd_vel;
             new_cmd_vel.linear.x = cur_tv + twist_scale * 
