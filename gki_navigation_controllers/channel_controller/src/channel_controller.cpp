@@ -630,7 +630,7 @@ void ChannelController::limitTwist(geometry_msgs::Twist & cmd_vel) const
             //    (cmd_vel.angular.z - cur_rv);
             //    //twist_scale * cmd_vel.angular.z;
 
-            // TODO never scale at/near min vels
+            // never scale at/near min vels
             // never scale to/near min vels
 
             //// check mins
