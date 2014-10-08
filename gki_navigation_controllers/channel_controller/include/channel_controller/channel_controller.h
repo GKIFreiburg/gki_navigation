@@ -53,14 +53,15 @@ namespace channel_controller
                     ~ScopedVelocityStatus();
 
                     // goal approach
-                    void setAtGoalPosStopToTurn(double angle_to_goal, double cur_tv);
-                    void setAtGoalPosTurnToGoal(double angle_to_goal, double cur_tv);
+                    void setAtGoalPosStopToTurn(double angle_to_goal, double cur_tv, double cur_rv);
+                    void setAtGoalPosTurnToGoal(double angle_to_goal, double cur_tv, double cur_rv);
 
                     // default channel behaviors
-                    void setChannelStopToTurn(double rel_channel_dir, double cur_tv);
-                    void setChannelTurnToChannel(double rel_channel_dir, double cur_tv);
+                    void setChannelStopToTurn(double rel_channel_dir, double cur_tv, double cur_rv);
+                    void setChannelTurnToChannel(double rel_channel_dir, double cur_tv, double cur_rv);
 
                     void setChannelFollowChannel(double rel_channel_dir,
+                            double cur_tv, double cur_rv,
                             const std::string & tv_scale, const std::string & rv_scale);
 
                     // failures/recoveries
