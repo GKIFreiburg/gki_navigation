@@ -3,6 +3,7 @@
 
 #include <nav_core/base_local_planner.h>
 #include <nav_msgs/Odometry.h>
+#include <sensor_msgs/LaserScan.h>
 #include <visualization_msgs/MarkerArray.h>
 #include "dynamicvoronoi/dynamicvoronoi.h"
 
@@ -156,6 +157,7 @@ namespace channel_controller
             }
 
             void odometryCallback(const nav_msgs::Odometry & odom);
+            void laserCallback(const sensor_msgs::LaserScan & laser);
 
             double straight_up(double x, double a, double b) const;
             double straight_down(double x, double a, double b) const;
@@ -174,6 +176,7 @@ namespace channel_controller
             /// starting at the current_waypoint_
             std::vector< tf::Stamped<tf::Pose> > local_plan_;
 
+            ros::Subscriber sub_laser_;
             ros::Subscriber sub_odom_;
             ros::Publisher pub_markers_;
             ros::Publisher pub_status_marker_;
@@ -184,6 +187,7 @@ namespace channel_controller
             ros::Publisher pub_call_clear_;
 
             nav_msgs::Odometry last_odom_;
+            sensor_msgs::LaserScan last_laser_;
 
             ros::Time last_cmd_vel_time_;   ///< last time we send a command
 
@@ -197,6 +201,8 @@ namespace channel_controller
             enum SafeWaypointState safe_waypoint_state_;
 
             // Controller Parameters
+            bool use_laser_;
+            bool use_costmap_;
 
             /// Minimum channel width that is allowed to steer to a waypoint
             /** 

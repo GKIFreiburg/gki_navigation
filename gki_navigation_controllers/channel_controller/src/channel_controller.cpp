@@ -16,7 +16,7 @@ namespace channel_controller
 
 PLUGINLIB_EXPORT_CLASS(channel_controller::ChannelController, nav_core::BaseLocalPlanner);
 
-ChannelController::ChannelController() : tf_(NULL), costmap_ros_(NULL), current_waypoint_(0)
+ChannelController::ChannelController() : tf_(NULL), costmap_ros_(NULL), current_waypoint_(0), use_laser_(true), use_costmap_(true)
 {
 }
 
@@ -48,6 +48,9 @@ void ChannelController::initialize(std::string name,
     ROS_INFO("Initializing ChannelController from ~/%s", class_name.c_str());
     ros::NodeHandle nhPriv("~/" + class_name);    // ~ = /move_base, our config should be in /move_base/name
     ros::NodeHandle nh;
+
+    nhPriv.param("use_laser", use_laser_, true);
+    nhPriv.param("use_costmap", use_costmap_, true);
 
     nhPriv.param("safe_waypoint_channel_width", safe_waypoint_channel_width_, 0.5);
     nhPriv.param("safe_channel_width", safe_channel_width_, 0.4);
@@ -82,6 +85,8 @@ void ChannelController::initialize(std::string name,
     nhPriv.param("vis_max_dist", vis_max_dist_, 1.0);
     nhPriv.param("visualize_voronoi", visualize_voronoi_, false);
 
+    ROS_INFO("use_laser: %d", use_laser_);
+    ROS_INFO("use_costmap: %d", use_costmap_);
     ROS_INFO("safe_waypoint_channel_width: %f", safe_waypoint_channel_width_);
     ROS_INFO("safe_channel_width: %f", safe_channel_width_);
     ROS_INFO("channel_score_da: %f", channel_score_da_);
@@ -115,7 +120,8 @@ void ChannelController::initialize(std::string name,
 
     pub_call_clear_ = nh.advertise<std_msgs::Empty>("/call_clear", 1);
 
-    sub_odom_ = nh.subscribe("odom", 1, &ChannelController::odometryCallback, this);
+    sub_odom_ = nh.subscribe("odom", 2, &ChannelController::odometryCallback, this);
+    sub_laser_ = nh.subscribe("base_scan_filtered", 2, &ChannelController::laserCallback, this);
 
     //updateVoronoi();
 
@@ -130,16 +136,50 @@ bool ChannelController::updateVoronoi()
     ROS_ASSERT(costmap_.getSizeInCellsY() == voronoi_.getSizeY());
 
     std::vector<IntPoint> obstacles;
-    for(unsigned int x = 0; x < costmap_.getSizeInCellsX(); x++) {
-        for(unsigned int y = 0; y < costmap_.getSizeInCellsY(); y++) {
-            if(costmap_.getCost(x, y) >= costmap_2d::LETHAL_OBSTACLE) { // lethal and unknown
-                obstacles.push_back(IntPoint(x, y));
+    if(use_costmap_) {
+        for(unsigned int x = 0; x < costmap_.getSizeInCellsX(); x++) {
+            for(unsigned int y = 0; y < costmap_.getSizeInCellsY(); y++) {
+                if(costmap_.getCost(x, y) >= costmap_2d::LETHAL_OBSTACLE) { // lethal and unknown
+                    obstacles.push_back(IntPoint(x, y));
+                }
             }
         }
     }
+    float validRangesFrac = 0.0;
+    if(use_laser_) {
+        double dt = (ros::Time::now() - last_laser_.header.stamp).toSec();
+        if(dt > 0.2) {
+            ROS_ERROR("%s: Laser too old - age is: %f", __func__, dt);
+            return false;
+        }
+        // get tf from laser to costmap/voronoi frame
+        tf::StampedTransform transform;
+        try {
+            tf_->lookupTransform(costmap_ros_->getGlobalFrameID(),
+                    last_laser_.header.frame_id, last_laser_.header.stamp, transform);
+        } catch(tf::TransformException & e) {
+            ROS_ERROR("%s: TF Error: %s", __func__, e.what());
+            return false;
+        }
+        unsigned int validRanges = 0;   // to check if we got actual data, i.e. Go drive!
+        for(unsigned int i = 0; i < last_laser_.ranges.size(); i++) {
+            if(last_laser_.ranges[i] <= last_laser_.range_min || last_laser_.ranges[i] >= last_laser_.range_max)
+                continue;
+            validRanges++;
+            double da = last_laser_.angle_min + last_laser_.angle_increment * i;
+            tf::Vector3 pt(last_laser_.ranges[i] * cos(da), last_laser_.ranges[i] * sin(da), 0.0);
+            tf::Vector3 ptCostmap = transform * pt;
+            unsigned int ix, iy;
+            if(costmap_.worldToMap(ptCostmap.x(), ptCostmap.y(), ix, iy)) {
+                obstacles.push_back(IntPoint(ix, iy));
+            }
+        }
+        if(last_laser_.ranges.size() > 0)
+            validRangesFrac = (double)validRanges/(double)last_laser_.ranges.size();
+    }
     // If there are no obstacles, wait as a precaution (assume there always will be _some_)
     // Will stop in actual free space!
-    if(wait_for_obstacles_time_ > 0.0 && obstacles.empty()) {
+    if(wait_for_obstacles_time_ > 0.0 && obstacles.empty() && validRangesFrac < 0.2) {
         if(waiting_for_obstacles_start_time_ == ros::Time(0)) {
             // first time we got in here
             waiting_for_obstacles_start_time_ = ros::Time::now();
@@ -544,6 +584,11 @@ double ChannelController::straight_down(double x, double a, double b) const
 void ChannelController::odometryCallback(const nav_msgs::Odometry & odom)
 {
     last_odom_ = odom;
+}
+
+void ChannelController::laserCallback(const sensor_msgs::LaserScan & laser)
+{
+    last_laser_ = laser;
 }
 
 void ChannelController::limitTwist(geometry_msgs::Twist & cmd_vel) const
