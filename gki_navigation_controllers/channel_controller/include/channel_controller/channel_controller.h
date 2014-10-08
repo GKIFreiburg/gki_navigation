@@ -229,6 +229,7 @@ namespace channel_controller
 
             /// Waypoints within this are considered reached (unless goal wpt)
             double waypoint_reached_dist_;
+            double waypoint_reached_dist_at_max_tv_;
             double waypoint_reached_angle_;
             /// Goal waypoint is considered reached
             double goal_reached_dist_;

@@ -63,6 +63,7 @@ void ChannelController::initialize(std::string name,
     nhPriv.param("max_get_to_safe_dist_time", max_get_to_safe_dist_time_, 10.0);
 
     nhPriv.param("waypoint_reached_dist", waypoint_reached_dist_, 0.3);
+    nhPriv.param("waypoint_reached_dist_at_max_tv", waypoint_reached_dist_at_max_tv_, 0.3);
     nhPriv.param("waypoint_reached_angle", waypoint_reached_angle_, 7.0);
     nhPriv.param("goal_reached_dist", goal_reached_dist_, 0.1);
     nhPriv.param("goal_reached_angle", goal_reached_angle_, 0.22);
@@ -275,7 +276,7 @@ void ChannelController::visualizeVoronoi()
 
 bool ChannelController::isGoalReached()
 {
-    if(ros::Time::now() - last_odom_.header.stamp > ros::Duration(5.0)) {
+    if(ros::Time::now() - last_odom_.header.stamp > ros::Duration(0.5)) {
         ROS_ERROR_THROTTLE(1.0, "isGoalReached:: Last odom is too old: %f - not at goal.",
                 (ros::Time::now() - last_odom_.header.stamp).toSec());
         return false;
@@ -345,7 +346,9 @@ bool ChannelController::currentWaypointReached() const
     tf::Stamped<tf::Pose> currentWaypoint = local_plan_.front();
     tf::Pose toWaypoint = robot_pose.inverseTimes(currentWaypoint);
 
-    double distThreshold = waypoint_reached_dist_;
+    double cur_tv = last_odom_.twist.twist.linear.x;
+    double distThreshold = waypoint_reached_dist_ + (waypoint_reached_dist_at_max_tv_ - waypoint_reached_dist_) *
+        straight_up(cur_tv, min_tv_, max_tv_);
     double angleThreshold = waypoint_reached_angle_;
     if(local_plan_.size() == 1) {   // only 1 wp left -> goal wp
         distThreshold = goal_reached_dist_;
@@ -1093,17 +1096,17 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
     cmd_vel = geometry_msgs::Twist();   // init to 0
     ScopedVelocityStatus velStatus(cmd_vel, pub_status_marker_, pub_sound_, pub_led_, costmap_ros_);
 
+    if(ros::Time::now() - last_odom_.header.stamp > ros::Duration(0.5)) {
+        ROS_ERROR("Last odom is too old: %f - cannot produce commands.",
+                (ros::Time::now() - last_odom_.header.stamp).toSec());
+        return false;
+    }
     if(!updateVoronoi()) {
         ROS_ERROR_THROTTLE(1.0, "updateVoronoi failed.");
         return false;
     }
 
     if(!localizeGlobalPlan(current_waypoint_)) {
-        return false;
-    }
-    if(ros::Time::now() - last_odom_.header.stamp > ros::Duration(5.0)) {
-        ROS_ERROR("Last odom is too old: %f - cannot produce commands.",
-                (ros::Time::now() - last_odom_.header.stamp).toSec());
         return false;
     }
 
