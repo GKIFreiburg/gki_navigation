@@ -17,6 +17,8 @@
   <depend package="laser_line_detection"/>
   <depend package="visualization_msgs"/>
   <depend package="angles"/>
+  <depend package="hector_worldmodel_msgs"/>
+  <depend package="image_geometry"/>
 
 </package>
 

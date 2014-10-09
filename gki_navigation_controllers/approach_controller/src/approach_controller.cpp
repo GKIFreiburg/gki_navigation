@@ -1,4 +1,5 @@
 #include "approach_controller.h"
+#include <image_geometry/pinhole_camera_model.h>
 #include <angles/angles.h>
 #include <geometry_msgs/Twist.h>
 #include <boost/foreach.hpp>
@@ -33,12 +34,17 @@ ApproachController::ApproachController(const std::string & action_name, const st
     sub_laser_ = nh_.subscribe("base_scan_filtered", 2, &ApproachController::laserCallback, this);
     sub_line_features_ = nh_.subscribe("isolated_lines", 2, &ApproachController::lineFeaturesCallback, this);
     sub_line_features2_ = nh_.subscribe("connected_lines", 2, &ApproachController::lineFeaturesCallback, this);
+    sub_line_list_ = nh_.subscribe("laser_lines", 2, &ApproachController::lineListCallback, this);
+    sub_marker_ = nh_.subscribe("/worldmodel/marker_percept", 3, &ApproachController::imagePerceptCallback, this);
+
     pub_vel_ = nh_.advertise<geometry_msgs::Twist>("cmd_vel_mux/input/navi", 1);
 
     pub_vis_ = nh_.advertise<visualization_msgs::Marker>("approach_vis", 20);
 
     approach_dist_ = 0.4;
     succeeded_dist_ = 0.15;
+    marker_max_height_ = 0.75;
+    marker_max_dist_ = 1.5;
 
     ros::NodeHandle nhPriv("~");
     nhPriv.param("approach_dist", approach_dist_, approach_dist_);
@@ -87,6 +93,11 @@ void ApproachController::executeCB(const move_base_msgs::MoveBaseGoalConstPtr & 
     {
         boost::unique_lock<boost::mutex> scoped_lock(line_feature_pose_mutex_);
         line_feature_pose_.header.stamp = ros::Time(0);
+    }
+
+    {
+        boost::unique_lock<boost::mutex> scoped_lock(marker_pose_mutex_);
+        marker_pose_.header.stamp = ros::Time(0);
     }
 
     ros::Rate rate(10.0);
@@ -192,6 +203,70 @@ void ApproachController::publishVel(double tv, double rv)
     cmd_vel.linear.x = tv;
     cmd_vel.angular.z = rv;
     pub_vel_.publish(cmd_vel);
+}
+
+void ApproachController::lineListCallback(const laser_line_detection::LineList & lineList)
+{
+    line_list_ = lineList;
+}
+
+void ApproachController::imagePerceptCallback(const hector_worldmodel_msgs::ImagePercept & imagePercept)
+{
+    image_geometry::PinholeCameraModel model;
+    if(!model.fromCameraInfo(imagePercept.camera_info)) {
+        ROS_ERROR_THROTTLE(1.0, "ApproachController: imagePerceptCallback: could not build camera model.");
+        return;
+    }
+
+    cv::Point3d ray = model.projectPixelTo3dRay(cv::Point2d(imagePercept.x, imagePercept.y));
+    tf::Vector3 rayTf(ray.x, ray.y, ray.z);
+    rayTf.normalize();
+    tf::Vector3 rayEnd = rayTf * marker_max_dist_;
+    // the point 0,0,0 and rayEnd are both in the camera frame.
+    // We can build a new ray in the laser frame to match to the lines.
+    geometry_msgs::PointStamped cameraStart;
+    geometry_msgs::PointStamped cameraRayEnd;
+    cameraStart.header = imagePercept.header;
+    cameraRayEnd.header = imagePercept.header;
+    // cameraStart is at 0, 0, 0
+    tf::pointTFToMsg(rayEnd, cameraRayEnd.point);
+    geometry_msgs::PointStamped cameraLaserStart;
+    geometry_msgs::PointStamped cameraLaserEnd;
+    // transform to get start and end in laser frame
+    {
+        boost::unique_lock<boost::mutex> scoped_lock_tf(tf_mutex_);
+        try {
+            // FIXME correct would be tiem travel to laser lines
+            // this should be close enough
+            if(!tf_.waitForTransform(line_list_.header.frame_id,
+                        imagePercept.header.frame_id, imagePercept.header.stamp, ros::Duration(0.2))) {
+                ROS_ERROR("Current image percept to laser lines TF not available");
+                return;
+            }
+            tf_.transformPoint(line_list_.header.frame_id,
+                    cameraStart, cameraLaserStart);
+            tf_.transformPoint(line_list_.header.frame_id,
+                    cameraRayEnd, cameraLaserEnd);
+        } catch(tf::TransformException & e) {
+            ROS_ERROR("%s: TF Error: %s", __func__, e.what());
+            return;
+        }
+    }
+
+    visualization_msgs::Marker marker;
+    marker.header = line_list_.header;
+    marker.ns = "marker_ray";
+    marker.type = visualization_msgs::Marker::ARROW;
+    marker.action = visualization_msgs::Marker::ADD;
+    marker.pose.orientation.w = 1;
+    marker.scale.x = 0.1;
+    marker.scale.y = 0.2;
+    marker.scale.z = 0.2;
+    marker.color.r = 1.0;
+    marker.color.a = 1.0;
+    marker.points.push_back(cameraLaserStart.point);
+    marker.points.push_back(cameraLaserEnd.point);
+    pub_vis_.publish(marker);
 }
 
 void ApproachController::lineFeaturesCallback(const geometry_msgs::PoseArray & lineFeatures)
