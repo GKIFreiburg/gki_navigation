@@ -1,4 +1,5 @@
 #include "approach_controller.h"
+#include <utility>
 #include <image_geometry/pinhole_camera_model.h>
 #include <angles/angles.h>
 #include <geometry_msgs/Twist.h>
@@ -49,8 +50,13 @@ ApproachController::ApproachController(const std::string & action_name, const st
     ros::NodeHandle nhPriv("~");
     nhPriv.param("approach_dist", approach_dist_, approach_dist_);
     nhPriv.param("succeeded_dist", succeeded_dist_, succeeded_dist_);
+    nhPriv.param("marker_max_height", marker_max_height_, marker_max_height_);
+    nhPriv.param("marker_max_dist", marker_max_dist_, marker_max_dist_);
 
     ROS_INFO("ApproachController: approach_dist: %f", approach_dist_);
+    ROS_INFO("ApproachController: succeeded_dist: %f", succeeded_dist_);
+    ROS_INFO("ApproachController: marker_max_height: %f", marker_max_height_);
+    ROS_INFO("ApproachController: marker_max_dist: %f", marker_max_dist_);
 
     as_.start();
 }
@@ -267,6 +273,138 @@ void ApproachController::imagePerceptCallback(const hector_worldmodel_msgs::Imag
     marker.points.push_back(cameraLaserStart.point);
     marker.points.push_back(cameraLaserEnd.point);
     pub_vis_.publish(marker);
+
+    tf::Vector3 cameraLaserStartTf;
+    tf::Vector3 cameraLaserEndTf;
+    tf::pointMsgToTF(cameraLaserStart.point, cameraLaserStartTf);
+    tf::pointMsgToTF(cameraLaserEnd.point, cameraLaserEndTf);
+    std::vector< std::pair<tf::Vector3, tf::Vector3> > intersections;
+    forEach(const laser_line_detection::Line & line, line_list_.lines) {
+        tf::Vector3 lineStartTf;
+        tf::Vector3 lineEndTf;
+        tf::pointMsgToTF(line.start, lineStartTf);
+        tf::pointMsgToTF(line.end, lineEndTf);
+        tf::Vector3 intersection;
+        if(lineIntersects(cameraLaserStartTf, cameraLaserEndTf,
+                    lineStartTf, lineEndTf, intersection)) {
+            if(intersection.z() > marker_max_height_) {
+                continue;
+            }
+            // this is laser frame, so no points behind:
+            if(intersection.x() <= 0)
+                continue;
+
+            // found something
+            intersections.push_back(std::make_pair(intersection, lineEndTf - lineStartTf));
+        }
+    }
+    if(intersections.empty()) {
+        ROS_WARN_THROTTLE(1.0, "Found no valid line intersection with marker percept");
+        return;
+    }
+
+    tf::Vector3 bestIntersection = intersections.front().first;
+    tf::Vector3 bestIntersectionLineDirection = intersections.front().second;
+    // best = closest to laser...
+    for(std::vector< std::pair<tf::Vector3, tf::Vector3> >::iterator it = intersections.begin();
+            it != intersections.end(); it++) {
+        if(hypot(bestIntersection.x(), bestIntersection.y()) > hypot(it->first.x(), it->first.y())) {
+            bestIntersection = it->first;
+            bestIntersectionLineDirection = it->second;
+        }
+    }
+    tf::Vector3 lineNormalA(-bestIntersectionLineDirection.y(), bestIntersectionLineDirection.x(), 0.0);
+    tf::Vector3 lineNormalB(bestIntersectionLineDirection.y(), -bestIntersectionLineDirection.x(), 0.0);
+    tf::Vector3 laserDirection(1.0, 0.0, 0.0);
+    double dotA = lineNormalA.dot(laserDirection);
+    double dotB = lineNormalB.dot(laserDirection);
+    // take the normal more pointing towards us, i.e. against the laser
+    tf::Vector3 normal;
+    if(dotA < dotB) {   // negative ideally
+        normal = lineNormalA;
+    } else {
+        normal = lineNormalB;
+    }
+
+    // we have the intersection point and normal.
+    // put them into a pose in the laser frame.
+    tf::Quaternion rot = tf::shortestArcQuat(laserDirection, normal);
+    geometry_msgs::PoseStamped intersectionPose;
+    intersectionPose.header = line_list_.header;
+    tf::quaternionTFToMsg(rot, intersectionPose.pose.orientation);
+    tf::pointTFToMsg(bestIntersection, intersectionPose.pose.position);
+
+    // convert to fixed_frame_
+    geometry_msgs::PoseStamped intersectionPoseFixed;
+    {
+        boost::unique_lock<boost::mutex> scoped_lock_tf(tf_mutex_);
+        try {
+            // FIXME correct would be tiem travel to laser lines
+            // this should be close enough
+            if(!tf_.waitForTransform(fixed_frame_,
+                        intersectionPose.header.frame_id, intersectionPose.header.stamp, ros::Duration(0.2))) {
+                ROS_ERROR("Current intersection pose to fixed TF not available");
+                return;
+            }
+            tf_.transformPose(fixed_frame_,
+                    intersectionPose, intersectionPoseFixed);
+        } catch(tf::TransformException & e) {
+            ROS_ERROR("%s: TF Error: %s", __func__, e.what());
+            return;
+        }
+    }
+
+    // visualize
+    visualization_msgs::Marker markerTarget;
+    markerTarget.header = intersectionPoseFixed.header;
+    markerTarget.ns = "marker_target";
+    markerTarget.type = visualization_msgs::Marker::ARROW;
+    markerTarget.action = visualization_msgs::Marker::ADD;
+    markerTarget.pose = intersectionPoseFixed.pose;
+    markerTarget.scale.x = 0.25;
+    markerTarget.scale.y = 0.1;
+    markerTarget.scale.z = 0.1;
+    markerTarget.color.r = 1.0;
+    markerTarget.color.b = 1.0;
+    markerTarget.color.a = 1.0;
+    pub_vis_.publish(markerTarget);
+
+    // store it!
+    boost::unique_lock<boost::mutex> scoped_lock(marker_pose_mutex_);
+    marker_pose_ = intersectionPoseFixed;
+}
+
+bool ApproachController::lineIntersects(const tf::Vector3 & s1, const tf::Vector3 & e1,
+        const tf::Vector3 & s2, const tf::Vector3 & e2, tf::Vector3 & intersection) 
+{
+    tf::Vector3 d1 = e1 - s1;
+    tf::Vector3 d2 = e2 - s2;
+    tf::Vector3 b = s1 - s2;
+
+    // first check the parallelism
+    tf::Vector3 d1proj = tf::Vector3(d1.x(), d1.y(), 0.0);
+    d1proj.normalize();
+    tf::Vector3 d2proj = tf::Vector3(d2.x(), d2.y(), 0.0);
+    d2proj.normalize();
+    double da = acos(fabs(d1proj.dot(d2proj)));
+    if(fabs(da) < angles::from_degrees(20)) {   // too steep approach angle. This isn't it.
+        return false;
+    }
+
+    double denom = d1.y() * d2.x() - d1.x() * d2.y();
+    if(fabs(denom) < 0.001) // shouldnt happen from preivous cond
+        return false;
+
+    double lambda1 = (b.x() * d2.y() - b.y() * d2.x())/denom;
+    // lambda is where the intersection is on line1
+    // if it is between 0 and 1, it is between s1 and e1
+    // +- 10% we have an intersection on the line.
+    if(lambda1 < -0.1 || lambda1 > 1.1) {
+        return false;
+    }
+
+    intersection = s1 + lambda1 * d1;
+    return true;
 }
 
 void ApproachController::lineFeaturesCallback(const geometry_msgs::PoseArray & lineFeatures)
@@ -408,17 +546,24 @@ tf::Pose ApproachController::getTargetPose(bool & valid)
     geometry_msgs::PoseStamped bestPose;
     bool bestPoseFound = false;
 
-    double dtLineFeaturePose = HUGE_VAL;
     {
         boost::unique_lock<boost::mutex> scoped_lock(line_feature_pose_mutex_);
-        dtLineFeaturePose = (now - line_feature_pose_.header.stamp).toSec();
+        double dtLineFeaturePose = (now - line_feature_pose_.header.stamp).toSec();
         //printf("AGE: %f\n", dtLineFeaturePose);
         if(dtLineFeaturePose < 30.0) {
             bestPose = line_feature_pose_;
             bestPoseFound = true;
         }
     }
-
+    {
+        boost::unique_lock<boost::mutex> scoped_lock(marker_pose_mutex_);
+        double dtMarkerPose = (now - marker_pose_.header.stamp).toSec();
+        //printf("MARKER AGE: %f\n", dtMarkerPose);
+        if(dtMarkerPose < 30.0) {
+            bestPose = marker_pose_;
+            bestPoseFound = true;
+        }
+    }
 
     if(!bestPoseFound) {
         // let's assume the goal is good,

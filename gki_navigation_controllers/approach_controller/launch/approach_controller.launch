@@ -2,6 +2,8 @@
     <node pkg="approach_controller" type="approach_controller" name="approach_controller">
         <param name="approach_dist" value="0.14" />
         <param name="succeeded_dist" value="0.2" />
+        <param name="marker_max_height" value="0.5" />
+        <param name="marker_max_dist" value="1.5" />
     </node>
     <node pkg="approach_controller" type="retreat_controller" name="retreat_controller">
         <param name="retreat_dist" value="0.4" />

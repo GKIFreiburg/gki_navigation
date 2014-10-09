@@ -30,6 +30,9 @@ class ApproachController
 
         void imagePerceptCallback(const hector_worldmodel_msgs::ImagePercept & imagePercept);
 
+        bool lineIntersects(const tf::Vector3 & p1s, const tf::Vector3 & p1e,
+                const tf::Vector3 & p2s, const tf::Vector3 & p2e, tf::Vector3 & intersection); 
+
         /// Get the best estimate what we should steer towards
         /**
          * In the /cube_holder_link frame.
