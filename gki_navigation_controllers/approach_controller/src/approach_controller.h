@@ -26,10 +26,10 @@ class ApproachController
 
         /// Get the best estimate what we should steer towards
         /**
-         * In the /base_footprint frame.
+         * In the /cube_holder_link frame.
          * Empty pose if failure.
          */
-        tf::Pose getTargetPose();
+        tf::Pose getTargetPose(bool & valid);
 
         void publishVel(double tv, double rv);
 
@@ -40,6 +40,7 @@ class ApproachController
         std::string fixed_frame_;
 
         double approach_dist_;
+        double approach_corridor_delta_y_;
 
         ros::NodeHandle nh_;
         actionlib::SimpleActionServer<move_base_msgs::MoveBaseAction> as_; 
