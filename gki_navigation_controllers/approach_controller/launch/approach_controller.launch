@@ -1,5 +1,6 @@
 <launch>
     <node pkg="approach_controller" type="approach_controller" name="approach_controller">
+        <param name="approach_dist" value="0.4" />
     </node>
     <node pkg="approach_controller" type="retreat_controller" name="retreat_controller">
         <param name="retreat_dist" value="0.4" />
