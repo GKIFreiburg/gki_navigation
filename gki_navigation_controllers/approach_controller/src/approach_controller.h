@@ -40,7 +40,7 @@ class ApproachController
         std::string fixed_frame_;
 
         double approach_dist_;
-        double approach_corridor_delta_y_;
+        double succeeded_dist_;
 
         ros::NodeHandle nh_;
         actionlib::SimpleActionServer<move_base_msgs::MoveBaseAction> as_; 

@@ -38,11 +38,11 @@ ApproachController::ApproachController(const std::string & action_name, const st
     pub_vis_ = nh_.advertise<visualization_msgs::Marker>("approach_vis", 10);
 
     approach_dist_ = 0.4;
-    approach_corridor_delta_y_ = 0.2;
+    succeeded_dist_ = 0.15;
 
     ros::NodeHandle nhPriv("~");
     nhPriv.param("approach_dist", approach_dist_, approach_dist_);
-    nhPriv.param("approach_corridor_delta_y", approach_corridor_delta_y_, approach_corridor_delta_y_);
+    nhPriv.param("succeeded_dist", succeeded_dist_, succeeded_dist_);
 
     ROS_INFO("ApproachController: approach_dist: %f", approach_dist_);
 
@@ -51,8 +51,23 @@ ApproachController::ApproachController(const std::string & action_name, const st
 
 void ApproachController::executeCB(const move_base_msgs::MoveBaseGoalConstPtr & goal)
 {
-    goal_pose_ = goal->target_pose;
-    // TODO goal_pose_ needs to go to fixed_frame_
+    {
+        boost::unique_lock<boost::mutex> scoped_lock_tf(tf_mutex_);
+        try {
+            if(!tf_.waitForTransform(fixed_frame_,
+                        goal->target_pose.header.frame_id, goal->target_pose.header.stamp, ros::Duration(1.0))) {
+                ROS_ERROR("Current goal pose TF not available");
+                as_.setAborted();
+                return;
+            }
+            tf_.transformPose(fixed_frame_,
+                    goal->target_pose, goal_pose_);
+        } catch(tf::TransformException & e) {
+            ROS_ERROR("%s: TF Error: %s", __func__, e.what());
+            as_.setAborted();
+            return;
+        }
+    }
 
     {
         boost::unique_lock<boost::mutex> scoped_lock(line_feature_pose_mutex_);
@@ -78,10 +93,9 @@ void ApproachController::executeCB(const move_base_msgs::MoveBaseGoalConstPtr & 
         ROS_INFO_THROTTLE(1.0, "ApproachController: min laser dist: %f", minX);
 
         // TODO maybe always succeed?
-
         bool poseOK = false;
         tf::Pose targetPose = getTargetPose(poseOK);
-        ROS_INFO("TP: %f %f", targetPose.getOrigin().x(), targetPose.getOrigin().y());
+        //ROS_INFO("TP: %f %f", targetPose.getOrigin().x(), targetPose.getOrigin().y());
         // This is empty in failure, warn and go straight
         if(!poseOK) {
             ROS_ERROR_THROTTLE(1.0, "Invalid approach target: Going straight.");
@@ -100,7 +114,7 @@ void ApproachController::executeCB(const move_base_msgs::MoveBaseGoalConstPtr & 
                 return;
             }
             if(minX < approach_dist_) {
-                if(dist < 0.12) {   // close enough
+                if(dist < succeeded_dist_) {   // close enough
                     ROS_INFO("ApproachController: Success: within target distance: %f", dist);
                     as_.setSucceeded();
                 }
@@ -128,40 +142,22 @@ void ApproachController::driveToPose(const tf::Pose & pose)
 {
     double tv = 0;
     double rv = 0;
-    // NOW:
-    // 1. Drive to isolated via line features
-    // 2. Test on robot
-    // 3. minor todos (goal pose, etc.)
-    // 4. drive to marker
-    //
-    // otherwise:
-    // - position:
-    // - if too far away in y: go perpedicular
-    // - if not really aligned: go more towards y then necessary
-    // - if well aligned position:
-    // - if angle too bad: turn towards first
-    // - if position and angle OK: steer towards!
-    // TODO steer towards that.
 
-    //finally only call this = drive if laser safe
-    //when laser too close or target pose reached (in cube frame) STOP
-    //resulting succeed if close enough
-
-    // OK So the pose is in the wall, pointing outwards
-    // we wanna go 40cm ahead of that
-    // and come in perpendicular.
+    // OK So the pose is in the wall, pointing outwards by 25cm, i.e. ring centner
+    // The frame of the pose is the cube holder, i.e. what we wanna position
+    // Basically drive right at that thing!
 
     double dist = hypot(pose.getOrigin().y(), pose.getOrigin().x());
     if(dist < 0.07)
         return;
     double da = atan2(pose.getOrigin().y(), pose.getOrigin().x());
-    ROS_INFO("target rel: %f %f %f da: %f", pose.getOrigin().x(), pose.getOrigin().y(),
+    ROS_INFO_THROTTLE(0.5, "target rel: %f %f %f da: %f", pose.getOrigin().x(), pose.getOrigin().y(),
             angles::to_degrees(tf::getYaw(pose.getRotation())), angles::to_degrees(da));
-    tf::Pose pinv = pose.inverse();
-    ROS_INFO("drive rel: %f %f %f", pinv.getOrigin().x(), pinv.getOrigin().y(),
-            angles::to_degrees(tf::getYaw(pinv.getRotation())));
-    // OK need to steer this pose so its zero
+    //tf::Pose pinv = pose.inverse();
+    //ROS_INFO("drive rel: %f %f %f", pinv.getOrigin().x(), pinv.getOrigin().y(),
+    //        angles::to_degrees(tf::getYaw(pinv.getRotation())));
 
+    // OK need to steer this pose so its zero
     if(fabs(da) > angles::from_degrees(15.0)) {
         rv = 0.18 + 0.6 * straight_up(fabs(da), angles::from_degrees(15), angles::from_degrees(90));
         if(da < 0)
@@ -187,7 +183,7 @@ void ApproachController::lineFeaturesCallback(const geometry_msgs::PoseArray & l
 {
     // This collects isolated and connected lines likewise.
     // if one of those isn't centered we can still not subscribe if not trustworthy
-    // TODO for now assuming laser frame!!!
+    // FIXME for now assuming laser frame!!!
 
     // Determine a good/best line feature.
     // It must be in front of us, e.g. within a side deviation and not too far away.
@@ -205,7 +201,7 @@ void ApproachController::lineFeaturesCallback(const geometry_msgs::PoseArray & l
         if(!poseFound)
             best_pose.pose = pose;
         else {
-            // Take the one that's closed in y coord
+            // Take the one that's closed //    in y coord
             if(fabs(pose.position.y) < fabs(best_pose.pose.position.y)) {
                 best_pose.pose = pose;
             }
@@ -218,7 +214,7 @@ void ApproachController::lineFeaturesCallback(const geometry_msgs::PoseArray & l
             boost::unique_lock<boost::mutex> scoped_lock_tf(tf_mutex_);
             try {
                 if(!tf_.waitForTransform(fixed_frame_,
-                            best_pose.header.frame_id, best_pose.header.stamp, ros::Duration(0.1))) {
+                            best_pose.header.frame_id, best_pose.header.stamp, ros::Duration(0.2))) {
                     ROS_ERROR("Current Line features TF not available");
                     return;
                 }
@@ -326,7 +322,7 @@ tf::Pose ApproachController::getTargetPose(bool & valid)
     {
         boost::unique_lock<boost::mutex> scoped_lock(line_feature_pose_mutex_);
         dtLineFeaturePose = (now - line_feature_pose_.header.stamp).toSec();
-        printf("AGE: %f\n", dtLineFeaturePose);
+        //printf("AGE: %f\n", dtLineFeaturePose);
         if(dtLineFeaturePose < 30.0) {
             bestPose = line_feature_pose_;
             bestPoseFound = true;
@@ -335,12 +331,11 @@ tf::Pose ApproachController::getTargetPose(bool & valid)
 
 
     if(!bestPoseFound) {
-        // TODO let's assume the goal is good,
-        // otherwise use a fake pose for "go straight ahead"
+        // let's assume the goal is good,
         bestPose = goal_pose_;
     }
 
-    // TODO shift the pose out by 0.25 cm std for circles
+    // shift the pose out by 0.25 cm std for circles
     geometry_msgs::PoseStamped poseTarget;// = bestPose;
     poseTarget.header = bestPose.header;
     tf::Pose targetPose;
@@ -348,8 +343,8 @@ tf::Pose ApproachController::getTargetPose(bool & valid)
     tf::Pose ringOffset(tf::Quaternion(0,0,0,1), tf::Vector3(0.25, 0.0, 0.0));
     tf::Pose targetRingPose = targetPose * ringOffset;
     tf::poseTFToMsg(targetRingPose, poseTarget.pose);
-    ROS_INFO_STREAM(bestPose);
-    ROS_INFO_STREAM(poseTarget);
+    //ROS_INFO_STREAM(bestPose);
+    //ROS_INFO_STREAM(poseTarget);
 
     geometry_msgs::PoseStamped poseRobot;
     poseTarget.header.stamp = ros::Time(0);
@@ -357,7 +352,7 @@ tf::Pose ApproachController::getTargetPose(bool & valid)
         boost::unique_lock<boost::mutex> scoped_lock_tf(tf_mutex_);
         try {
             if(!tf_.waitForTransform("/cube_holder_link",
-                        poseTarget.header.frame_id, poseTarget.header.stamp, ros::Duration(0.1))) {
+                        poseTarget.header.frame_id, poseTarget.header.stamp, ros::Duration(0.2))) {
                 ROS_ERROR("Current target pose TF not available");
                 return tf::Pose();
             }
