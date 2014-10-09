@@ -44,6 +44,7 @@ class ApproachController
         ros::NodeHandle nh_;
         actionlib::SimpleActionServer<move_base_msgs::MoveBaseAction> as_; 
 
+        boost::mutex tf_mutex_;
         tf::TransformListener tf_;
 
         ros::Subscriber sub_laser_;

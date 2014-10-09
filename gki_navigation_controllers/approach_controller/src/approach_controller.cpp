@@ -127,17 +127,20 @@ void ApproachController::lineFeaturesCallback(const geometry_msgs::PoseArray & l
     }
     if(poseFound) {
         geometry_msgs::PoseStamped best_pose_fixed;
-        try {
-            if(!tf_.waitForTransform(fixed_frame_,
-                        best_pose.header.frame_id, best_pose.header.stamp, ros::Duration(0.1))) {
-                ROS_ERROR("Current Line features TF not available");
+        {
+            boost::unique_lock<boost::mutex> scoped_lock_tf(tf_mutex_);
+            try {
+                if(!tf_.waitForTransform(fixed_frame_,
+                            best_pose.header.frame_id, best_pose.header.stamp, ros::Duration(0.1))) {
+                    ROS_ERROR("Current Line features TF not available");
+                    return;
+                }
+                tf_.transformPose(fixed_frame_,
+                        best_pose, best_pose_fixed);
+            } catch(tf::TransformException & e) {
+                ROS_ERROR("%s: TF Error: %s", __func__, e.what());
                 return;
             }
-            tf_.transformPose(fixed_frame_,
-                    best_pose, best_pose_fixed);
-        } catch(tf::TransformException & e) {
-            ROS_ERROR("%s: TF Error: %s", __func__, e.what());
-            return;
         }
 
         boost::unique_lock<boost::mutex> scoped_lock(line_feature_pose_mutex_);
@@ -175,17 +178,20 @@ void ApproachController::laserCallback(const sensor_msgs::LaserScan & laser)
         ROS_ERROR("%s: Laser too old - age is: %f", __func__, dt);
         return;
     }
-    try {
-        if(!tf_.waitForTransform("/base_footprint",
-                    last_laser_.header.frame_id, last_laser_.header.stamp, ros::Duration(0.1))) {
-            ROS_ERROR("Current Laser TF not available");
+    {
+        boost::unique_lock<boost::mutex> scoped_lock_tf(tf_mutex_);
+        try {
+            if(!tf_.waitForTransform("/base_footprint",
+                        last_laser_.header.frame_id, last_laser_.header.stamp, ros::Duration(0.1))) {
+                ROS_ERROR("Current Laser TF not available");
+                return;
+            }
+            tf_.lookupTransform("/base_footprint",
+                    last_laser_.header.frame_id, last_laser_.header.stamp, transform);
+        } catch(tf::TransformException & e) {
+            ROS_ERROR("%s: TF Error: %s", __func__, e.what());
             return;
         }
-        tf_.lookupTransform("/base_footprint",
-                last_laser_.header.frame_id, last_laser_.header.stamp, transform);
-    } catch(tf::TransformException & e) {
-        ROS_ERROR("%s: TF Error: %s", __func__, e.what());
-        return;
     }
 
     boost::unique_lock<boost::mutex> scoped_lock(laser_mutex_);
@@ -245,23 +251,23 @@ tf::Pose ApproachController::getTargetPose()
         bestPose = goal_pose_;
     }
 
-    // TODO tf mutex?
-    // in what threads is tf used.
-
     geometry_msgs::PoseStamped poseRobot;
     geometry_msgs::PoseStamped poseTarget = bestPose;
     poseTarget.header.stamp = ros::Time(0);
-    try {
-        if(!tf_.waitForTransform("/base_footprint",
-                    poseTarget.header.frame_id, poseTarget.header.stamp, ros::Duration(0.1))) {
-            ROS_ERROR("Current target pose not available");
+    {
+        boost::unique_lock<boost::mutex> scoped_lock_tf(tf_mutex_);
+        try {
+            if(!tf_.waitForTransform("/base_footprint",
+                        poseTarget.header.frame_id, poseTarget.header.stamp, ros::Duration(0.1))) {
+                ROS_ERROR("Current target pose not available");
+                return tf::Pose();
+            }
+            tf_.transformPose("/base_footprint",
+                    poseTarget, poseRobot);
+        } catch(tf::TransformException & e) {
+            ROS_ERROR("%s: TF Error: %s", __func__, e.what());
             return tf::Pose();
         }
-        tf_.transformPose("/base_footprint",
-                poseTarget, poseRobot);
-    } catch(tf::TransformException & e) {
-        ROS_ERROR("%s: TF Error: %s", __func__, e.what());
-        return tf::Pose();
     }
 
     tf::Pose tfPose;
