@@ -35,7 +35,7 @@ ApproachController::ApproachController(const std::string & action_name, const st
     sub_line_features2_ = nh_.subscribe("connected_lines", 2, &ApproachController::lineFeaturesCallback, this);
     pub_vel_ = nh_.advertise<geometry_msgs::Twist>("cmd_vel_mux/input/navi", 1);
 
-    pub_vis_ = nh_.advertise<visualization_msgs::Marker>("approach_vis", 10);
+    pub_vis_ = nh_.advertise<visualization_msgs::Marker>("approach_vis", 20);
 
     approach_dist_ = 0.4;
     succeeded_dist_ = 0.15;
@@ -68,6 +68,21 @@ void ApproachController::executeCB(const move_base_msgs::MoveBaseGoalConstPtr & 
             return;
         }
     }
+
+    visualization_msgs::Marker marker;
+    marker.header = goal_pose_.header;
+    marker.ns = "goal_target";
+    marker.type = visualization_msgs::Marker::ARROW;
+    marker.action = visualization_msgs::Marker::ADD;
+    marker.pose = goal_pose_.pose;
+    marker.scale.x = 0.25;
+    marker.scale.y = 0.1;
+    marker.scale.z = 0.1;
+    marker.color.g = 1.0;
+    marker.color.b = 1.0;
+    marker.color.a = 1.0;
+    marker.lifetime = ros::Duration(30.0);
+    pub_vis_.publish(marker);
 
     {
         boost::unique_lock<boost::mutex> scoped_lock(line_feature_pose_mutex_);
