@@ -1,0 +1,21 @@
+<package>
+  <description brief="approach_controller">
+
+     approach_controller
+
+  </description>
+  <author>dornhege - RoboCupUser</author>
+  <license>BSD</license>
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/approach_controller</url>
+  <depend package="roscpp"/>
+  <depend package="actionlib"/>
+  <depend package="move_base_msgs"/>
+  <depend package="sensor_msgs"/>
+  <depend package="geometry_msgs"/>
+  <depend package="laser_line_detection"/>
+  <depend package="visualization_msgs"/>
+
+</package>
+
+

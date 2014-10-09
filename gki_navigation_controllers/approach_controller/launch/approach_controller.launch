@@ -1,0 +1,4 @@
+<launch>
+    <node pkg="approach_controller" type="approach_controller" name="approach_controller">
+    </node>
+</launch>
