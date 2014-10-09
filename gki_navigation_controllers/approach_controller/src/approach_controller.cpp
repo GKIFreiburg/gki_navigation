@@ -35,7 +35,7 @@ void ApproachController::executeCB(const move_base_msgs::MoveBaseGoalConstPtr & 
             }
         }
         printf("MD %f \n", minX);
-        if(minX < 0.5) {
+        if(minX < 0.4) {
             as_.setSucceeded();
             return;
         }
