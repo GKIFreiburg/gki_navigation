@@ -130,6 +130,11 @@ void ApproachController::executeCB(const move_base_msgs::MoveBaseGoalConstPtr & 
         }
         ROS_INFO_THROTTLE(1.0, "ApproachController: min laser dist: %f", minX);
 
+        // TODO 
+        // not stopping at laser any more - why?
+        // approach target now in nothingness
+        // goal odom transform
+
         geometry_msgs::PoseStamped cur_odom_pose;
         {
             boost::unique_lock<boost::mutex> scoped_lock(odom_mutex_);
@@ -568,7 +573,7 @@ void ApproachController::laserCallback(const sensor_msgs::LaserScan & laser)
         //ROS_INFO("rr %f", last_laser_.ranges[i]);
         tf::Vector3 pt(last_laser_.ranges[i] * cos(da), last_laser_.ranges[i] * sin(da), 0.0);
         tf::Vector3 ptBase = transform * pt;
-        if(fabs(ptBase.y()) < 0.3)  // keep points inside robot width
+        if(fabs(ptBase.y()) < 0.25)  // keep points inside robot width
             base_laser_points_.push_back(ptBase);
         //ROS_INFO_STREAM(ptBase.x() << " " << ptBase.y());
     }
