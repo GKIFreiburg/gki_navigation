@@ -7,6 +7,6 @@
         <param name="max_tv" value="0.2" />
     </node>
     <node pkg="approach_controller" type="retreat_controller" name="retreat_controller">
-        <param name="retreat_dist" value="0.4" />
+        <param name="retreat_dist" value="0.3" />
     </node>
 </launch>
