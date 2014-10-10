@@ -47,17 +47,20 @@ ApproachController::ApproachController(const std::string & action_name, const st
     succeeded_dist_ = 0.15;
     marker_max_height_ = 0.75;
     marker_max_dist_ = 1.5;
+    max_tv_ = 0.2;
 
     ros::NodeHandle nhPriv("~");
     nhPriv.param("approach_dist", approach_dist_, approach_dist_);
     nhPriv.param("succeeded_dist", succeeded_dist_, succeeded_dist_);
     nhPriv.param("marker_max_height", marker_max_height_, marker_max_height_);
     nhPriv.param("marker_max_dist", marker_max_dist_, marker_max_dist_);
+    nhPriv.param("max_tv", max_tv_, max_tv_);
 
     ROS_INFO("ApproachController: approach_dist: %f", approach_dist_);
     ROS_INFO("ApproachController: succeeded_dist: %f", succeeded_dist_);
     ROS_INFO("ApproachController: marker_max_height: %f", marker_max_height_);
     ROS_INFO("ApproachController: marker_max_dist: %f", marker_max_dist_);
+    ROS_INFO("ApproachController: max_tv: %f", max_tv_);
 
     as_.start();
 }
@@ -104,7 +107,7 @@ void ApproachController::executeCB(const move_base_msgs::MoveBaseGoalConstPtr & 
 
     {
         boost::unique_lock<boost::mutex> scoped_lock(line_feature_pose_mutex_);
-        line_feature_pose_.header.stamp = ros::Time(0);
+        line_feature_poses_.clear();
     }
 
     {
@@ -222,7 +225,7 @@ void ApproachController::driveToPose(const tf::Pose & pose)
         if(da < 0)
             rv = -rv;
     } else {
-        tv = 0.08;
+        tv = 0.08 + (max_tv_ - 0.08) * straight_up(fabs(dist), 0.2, 1.0);
         rv = 0.4 * straight_up(fabs(da), angles::from_degrees(0), angles::from_degrees(20));
         if(da < 0)
             rv = -rv;
@@ -515,16 +518,16 @@ void ApproachController::lineFeaturesCallback(const geometry_msgs::PoseArray & l
         // FIXME dont overwrite a better one if we already have one and it's not too old
         // problem would need to transform the old one back to laser frame.
         // ignore for now
-        line_feature_pose_ = best_pose_fixed;
+        line_feature_poses_.push_back(best_pose_fixed);
     }
 
     if(poseFound) {
         visualization_msgs::Marker marker;
-        marker.header = line_feature_pose_.header;
+        marker.header = line_feature_poses_.back().header;
         marker.ns = "line_features_target";
         marker.type = visualization_msgs::Marker::ARROW;
         marker.action = visualization_msgs::Marker::ADD;
-        marker.pose = line_feature_pose_.pose;
+        marker.pose = line_feature_poses_.back().pose;
         marker.lifetime = ros::Duration(1.0);
         marker.scale.x = 0.25;
         marker.scale.y = 0.1;
@@ -610,11 +613,25 @@ tf::Pose ApproachController::getTargetPose(bool & valid)
     // -1.0 - allows line_feature_pose_
     if(goal_pose_.pose.position.z < 0) {
         boost::unique_lock<boost::mutex> scoped_lock(line_feature_pose_mutex_);
-        double dtLineFeaturePose = (now - line_feature_pose_.header.stamp).toSec();
-        //printf("AGE: %f\n", dtLineFeaturePose);
-        if(dtLineFeaturePose < 30.0) {
-            bestPose = line_feature_pose_;
-            bestPoseFound = true;
+        if(!line_feature_poses_.empty()) {
+            double dtLineFeaturePose = (now - line_feature_poses_.back().header.stamp).toSec();
+            //printf("AGE: %f\n", dtLineFeaturePose);
+            if(dtLineFeaturePose < 30.0) {
+                bestPose.pose.position.x = 0;
+                bestPose.pose.position.y = 0;
+                bestPose.pose.position.z = 0;
+                forEach(const geometry_msgs::PoseStamped & pose, line_feature_poses_) {
+                    bestPose.pose.position.x += pose.pose.position.x;
+                    bestPose.pose.position.y += pose.pose.position.y;
+                    bestPose.pose.position.z += pose.pose.position.z;
+                    bestPoseFound = true;
+                }
+                bestPose.pose.position.x /= (double)line_feature_poses_.size();
+                bestPose.pose.position.y /= (double)line_feature_poses_.size();
+                bestPose.pose.position.z /= (double)line_feature_poses_.size();
+                bestPose.pose.orientation = line_feature_poses_.back().pose.orientation;
+                bestPose.header = line_feature_poses_.back().header;
+            }
         }
     }
     {

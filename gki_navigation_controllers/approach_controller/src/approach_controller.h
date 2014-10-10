@@ -55,6 +55,7 @@ class ApproachController
         double succeeded_dist_;
         double marker_max_dist_;
         double marker_max_height_;
+        double max_tv_;
 
         ros::NodeHandle nh_;
         actionlib::SimpleActionServer<move_base_msgs::MoveBaseAction> as_; 
@@ -81,7 +82,7 @@ class ApproachController
         boost::mutex marker_pose_mutex_;
         std::vector<geometry_msgs::PoseStamped> marker_poses_;
         boost::mutex line_feature_pose_mutex_;
-        geometry_msgs::PoseStamped line_feature_pose_;
+        std::vector<geometry_msgs::PoseStamped> line_feature_poses_;
         // also maybe lines to get perpendicular/project?
 
         laser_line_detection::LineList line_list_;
