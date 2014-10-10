@@ -973,7 +973,7 @@ int ChannelController::getToSafeWaypoint(geometry_msgs::Twist & cmd_vel,
     std::vector<DriveChannel> safe_channels = computeChannels(robotPose, relativeTarget,
             safe_channel_width_/2.0);
     if(safe_channels.empty()) {
-        ROS_ERROR("Could find no safe_channels - recovery needed");
+        ROS_ERROR_THROTTLE(1.0, "Could find no safe_channels - recovery needed");
         return -1;
     }
 
@@ -984,7 +984,7 @@ int ChannelController::getToSafeWaypoint(geometry_msgs::Twist & cmd_vel,
             safe_waypoint_state_ == SWSBestBackwardsChannelTurnOut)
         best_idx = evaluateSafeChannels(safe_channels, true);
     if(best_idx < 0) {
-        ROS_ERROR("Could not find best safe channel");
+        ROS_ERROR_THROTTLE(1.0, "Could not find best safe channel");
         return -1;
     }
 
@@ -1194,11 +1194,11 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
     if(getting_to_safe_wpt == 1) {
         return true;
     } else if(getting_to_safe_wpt == -1) {
-        ROS_ERROR("getToSafeWaypoint failed.");
+        ROS_ERROR_THROTTLE(1.0, "getToSafeWaypoint failed.");
         velStatus.setNoSafeChannel();
         return false;
     } else if(getting_to_safe_wpt == -2) {
-        ROS_INFO("getToSafeWaypoint succeeded - querying new global plan.");
+        ROS_INFO_THROTTLE(1.0, "getToSafeWaypoint succeeded - querying new global plan.");
         return false;
     }
 
