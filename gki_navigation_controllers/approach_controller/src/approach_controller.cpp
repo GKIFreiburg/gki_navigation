@@ -130,11 +130,6 @@ void ApproachController::executeCB(const move_base_msgs::MoveBaseGoalConstPtr & 
         }
         ROS_INFO_THROTTLE(1.0, "ApproachController: min laser dist: %f", minX);
 
-        // TODO 
-        // not stopping at laser any more - why?
-        // approach target now in nothingness
-        // goal odom transform
-
         geometry_msgs::PoseStamped cur_odom_pose;
         {
             boost::unique_lock<boost::mutex> scoped_lock(odom_mutex_);
@@ -174,7 +169,7 @@ void ApproachController::executeCB(const move_base_msgs::MoveBaseGoalConstPtr & 
         } else {
             double dist = hypot(targetPose.getOrigin().y(), targetPose.getOrigin().x());
             ROS_INFO_THROTTLE(1.0, "Dist to target: %f", dist);
-            if(dist < 0.01) {
+            if(dist < 0.02) {
                 ROS_INFO("ApproachController: Success: within close target distance: %f", dist);
                 as_.setSucceeded();
                 return;
@@ -232,8 +227,12 @@ void ApproachController::driveToPose(const tf::Pose & pose)
         if(da < 0)
             rv = -rv;
     }
-    if(fabs(dist) < 0.01)   // da will be incorrect/noisy so close
+    if(fabs(dist) < 0.02)   // da will be incorrect/noisy so close
         rv = 0;
+    if(pose.getOrigin().x() < 0) {
+        tv = -0.08;
+        rv = 0;
+    }
     publishVel(tv, rv);
 }
 
@@ -457,9 +456,9 @@ bool ApproachController::lineIntersects(const tf::Vector3 & s1, const tf::Vector
         return false;
     }
 
-    ROS_INFO("s1: %f %f, e1: %f %f, d1: %f %f", s1.x(), s1.y(), e1.x(), e1.y(), d1.x(), d1.y());
-    ROS_INFO("s2: %f %f, e2: %f %f, d2: %f %f", s2.x(), s2.y(), e2.x(), e2.y(), d2.x(), d2.y());
-    ROS_INFO("lambda1: %f", lambda1);
+    ROS_DEBUG_THROTTLE(1.0, "s1: %f %f, e1: %f %f, d1: %f %f", s1.x(), s1.y(), e1.x(), e1.y(), d1.x(), d1.y());
+    ROS_DEBUG_THROTTLE(1.0, "s2: %f %f, e2: %f %f, d2: %f %f", s2.x(), s2.y(), e2.x(), e2.y(), d2.x(), d2.y());
+    ROS_DEBUG_THROTTLE(1.0, "lambda1: %f", lambda1);
 
     intersection = s1 + lambda1 * d1;
     return true;
@@ -639,6 +638,7 @@ tf::Pose ApproachController::getTargetPose(bool & valid)
                 bestPose.pose.position.y /= (double)marker_poses_.size();
                 bestPose.pose.position.z /= (double)marker_poses_.size();
                 bestPose.pose.orientation = marker_poses_.back().pose.orientation;
+                bestPose.header = marker_poses_.back().header;
             }
         }
     }
@@ -667,7 +667,7 @@ tf::Pose ApproachController::getTargetPose(bool & valid)
         try {
             if(!tf_.waitForTransform("/cube_holder_link",
                         poseTarget.header.frame_id, poseTarget.header.stamp, ros::Duration(0.2))) {
-                ROS_ERROR("Current target pose TF not available");
+                ROS_ERROR_STREAM("Current target pose TF not available for: " << poseTarget);
                 return tf::Pose();
             }
             tf_.transformPose("/cube_holder_link",
