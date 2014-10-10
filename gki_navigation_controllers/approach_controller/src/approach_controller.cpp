@@ -163,7 +163,9 @@ void ApproachController::executeCB(const move_base_msgs::MoveBaseGoalConstPtr & 
         if(!poseOK) {
             ROS_ERROR_THROTTLE(1.0, "Invalid approach target: Going straight.");
 
-            if(minX < approach_dist_) {
+            // we don't wanna get close.
+            // This is only to move and HOPE that we get a good target from somewhere.
+            if(minX < 2 * approach_dist_) {
                 as_.setAborted();
                 return;
             }
@@ -177,7 +179,17 @@ void ApproachController::executeCB(const move_base_msgs::MoveBaseGoalConstPtr & 
                 as_.setSucceeded();
                 return;
             }
-            if(minX < approach_dist_) {
+            bool approachTooClose = false;
+            if(dist < 0.1) {
+                if(minX < approach_dist_) {
+                    approachTooClose = true;
+                }
+            } else {
+                if(minX < approach_dist_ + 0.3 * straight_up(dist, 0.0, 0.5)) {
+                    approachTooClose = true;
+                }
+            }
+            if(approachTooClose) {
                 if(dist < succeeded_dist_) {   // close enough
                     ROS_INFO("ApproachController: Success: within target distance: %f", dist);
                     as_.setSucceeded();
@@ -232,10 +244,10 @@ void ApproachController::driveToPose(const tf::Pose & pose)
     }
     if(fabs(dist) < 0.02)   // da will be incorrect/noisy so close
         rv = 0;
-    if(pose.getOrigin().x() < 0) {
-        tv = -0.08;
-        rv = 0;
-    }
+    //if(pose.getOrigin().x() < 0) {
+    //    tv = -0.08;
+    //    rv = 0;
+    //}
     publishVel(tv, rv);
 }
 
@@ -360,6 +372,7 @@ void ApproachController::imagePerceptCallback(const hector_worldmodel_msgs::Imag
             bestIntersectionLineDirection = it->second;
         }
     }
+    ROS_DEBUG_THROTTLE(1.0, "Intersection line dir: %f %f", bestIntersectionLineDirection.x(), bestIntersectionLineDirection.y());
     tf::Vector3 lineNormalA(-bestIntersectionLineDirection.y(), bestIntersectionLineDirection.x(), 0.0);
     tf::Vector3 lineNormalB(bestIntersectionLineDirection.y(), -bestIntersectionLineDirection.x(), 0.0);
     lineNormalA.normalize();
@@ -374,10 +387,11 @@ void ApproachController::imagePerceptCallback(const hector_worldmodel_msgs::Imag
     } else {
         normal = lineNormalB;
     }
+    ROS_DEBUG_THROTTLE(1.0, "Intersetion normal: %f %f", normal.x(), normal.y());
 
     // we have the intersection point and normal.
     // put them into a pose in the laser frame.
-    tf::Quaternion rot = tf::shortestArcQuat(normal, laserDirection);
+    tf::Quaternion rot = tf::createQuaternionFromYaw(atan2(normal.y(), normal.x()));// tf::shortestArcQuat(normal, laserDirection);
     geometry_msgs::PoseStamped intersectionPose;
     intersectionPose.header = line_list_.header;
     tf::quaternionTFToMsg(rot, intersectionPose.pose.orientation);

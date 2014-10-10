@@ -1,6 +1,6 @@
 <launch>
     <node pkg="approach_controller" type="approach_controller" name="approach_controller">
-        <param name="approach_dist" value="0.35" />
+        <param name="approach_dist" value="0.33" />
         <param name="succeeded_dist" value="0.2" />
         <param name="marker_max_height" value="0.45" />
         <param name="marker_max_dist" value="1.5" />
