@@ -124,6 +124,8 @@ void ApproachController::executeCB(const move_base_msgs::MoveBaseGoalConstPtr & 
         }
         ROS_INFO_THROTTLE(1.0, "ApproachController: min laser dist: %f", minX);
         //TODO abort if we turned more than 40deg away
+        //TODO integrate markers, but don't fall for far away ones
+        //TODO why vis sometimes only one part.
 
         // TODO maybe always succeed?
         bool poseOK = false;
@@ -387,8 +389,6 @@ void ApproachController::imagePerceptCallback(const hector_worldmodel_msgs::Imag
 bool ApproachController::lineIntersects(const tf::Vector3 & s1, const tf::Vector3 & e1,
         const tf::Vector3 & s2, const tf::Vector3 & e2, tf::Vector3 & intersection) 
 {
-    printf("ETT: %f %f\n", e2.x(), e2.y());
-    // FIXME lambda 1 AND 2 should be in
     tf::Vector3 d1 = e1 - s1;
     tf::Vector3 d2 = e2 - s2;
     tf::Vector3 b = s1 - s2;
@@ -410,8 +410,13 @@ bool ApproachController::lineIntersects(const tf::Vector3 & s1, const tf::Vector
     double lambda1 = (b.x() * d2.y() - b.y() * d2.x())/denom;
     // lambda is where the intersection is on line1
     // if it is between 0 and 1, it is between s1 and e1
-    // +- 10% we have an intersection on the line.
-    if(lambda1 < -0.1 || lambda1 > 1.1) {
+    // i.e. we have an intersection on the line.
+    if(lambda1 < 0.0 || lambda1 > 1.0) {
+        return false;
+    }
+    // we want to hit both lines
+    double lambda2 = (b.x() * d1.y() - b.y() * d1.x())/denom;
+    if(lambda2 < 0.0 || lambda2 > 1.0) {
         return false;
     }
 
