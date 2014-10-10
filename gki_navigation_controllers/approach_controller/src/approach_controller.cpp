@@ -40,7 +40,7 @@ ApproachController::ApproachController(const std::string & action_name, const st
 
     pub_vel_ = nh_.advertise<geometry_msgs::Twist>("cmd_vel_mux/input/navi", 1);
 
-    pub_vis_ = nh_.advertise<visualization_msgs::Marker>("approach_vis", 20);
+    pub_vis_ = nh_.advertise<visualization_msgs::Marker>("approach_vis", 30);
 
     approach_dist_ = 0.4;
     succeeded_dist_ = 0.15;
@@ -123,6 +123,7 @@ void ApproachController::executeCB(const move_base_msgs::MoveBaseGoalConstPtr & 
             }
         }
         ROS_INFO_THROTTLE(1.0, "ApproachController: min laser dist: %f", minX);
+        //TODO abort if we turned more than 40deg away
 
         // TODO maybe always succeed?
         bool poseOK = false;
@@ -140,7 +141,8 @@ void ApproachController::executeCB(const move_base_msgs::MoveBaseGoalConstPtr & 
             publishVel(0.08, 0.0);
         } else {
             double dist = hypot(targetPose.getOrigin().y(), targetPose.getOrigin().x());
-            if(dist < 0.07) {
+            ROS_INFO_THROTTLE(1.0, "Dist to target: %f", dist);
+            if(dist < 0.01) {
                 ROS_INFO("ApproachController: Success: within close target distance: %f", dist);
                 as_.setSucceeded();
                 return;
@@ -180,8 +182,6 @@ void ApproachController::driveToPose(const tf::Pose & pose)
     // Basically drive right at that thing!
 
     double dist = hypot(pose.getOrigin().y(), pose.getOrigin().x());
-    if(dist < 0.07)
-        return;
     double da = atan2(pose.getOrigin().y(), pose.getOrigin().x());
     ROS_INFO_THROTTLE(0.5, "target rel: %f %f %f da: %f", pose.getOrigin().x(), pose.getOrigin().y(),
             angles::to_degrees(tf::getYaw(pose.getRotation())), angles::to_degrees(da));
@@ -200,6 +200,8 @@ void ApproachController::driveToPose(const tf::Pose & pose)
         if(da < 0)
             rv = -rv;
     }
+    if(fabs(dist) < 0.01)   // da will be incorrect/noisy so close
+        rv = 0;
     publishVel(tv, rv);
 }
 
@@ -270,6 +272,7 @@ void ApproachController::imagePerceptCallback(const hector_worldmodel_msgs::Imag
     marker.scale.z = 0.2;
     marker.color.r = 1.0;
     marker.color.a = 1.0;
+    marker.lifetime = ros::Duration(1.0);
     marker.points.push_back(cameraLaserStart.point);
     marker.points.push_back(cameraLaserEnd.point);
     pub_vis_.publish(marker);
@@ -285,8 +288,11 @@ void ApproachController::imagePerceptCallback(const hector_worldmodel_msgs::Imag
         tf::pointMsgToTF(line.start, lineStartTf);
         tf::pointMsgToTF(line.end, lineEndTf);
         tf::Vector3 intersection;
-        if(lineIntersects(cameraLaserStartTf, cameraLaserEndTf,
-                    lineStartTf, lineEndTf, intersection)) {
+        if(lineIntersects(
+                    lineStartTf, lineEndTf,
+                    cameraLaserStartTf, cameraLaserEndTf,
+                    intersection
+                    )) {
             if(intersection.z() > marker_max_height_) {
                 continue;
             }
@@ -315,6 +321,8 @@ void ApproachController::imagePerceptCallback(const hector_worldmodel_msgs::Imag
     }
     tf::Vector3 lineNormalA(-bestIntersectionLineDirection.y(), bestIntersectionLineDirection.x(), 0.0);
     tf::Vector3 lineNormalB(bestIntersectionLineDirection.y(), -bestIntersectionLineDirection.x(), 0.0);
+    lineNormalA.normalize();
+    lineNormalB.normalize();
     tf::Vector3 laserDirection(1.0, 0.0, 0.0);
     double dotA = lineNormalA.dot(laserDirection);
     double dotB = lineNormalB.dot(laserDirection);
@@ -328,7 +336,7 @@ void ApproachController::imagePerceptCallback(const hector_worldmodel_msgs::Imag
 
     // we have the intersection point and normal.
     // put them into a pose in the laser frame.
-    tf::Quaternion rot = tf::shortestArcQuat(laserDirection, normal);
+    tf::Quaternion rot = tf::shortestArcQuat(normal, laserDirection);
     geometry_msgs::PoseStamped intersectionPose;
     intersectionPose.header = line_list_.header;
     tf::quaternionTFToMsg(rot, intersectionPose.pose.orientation);
@@ -355,6 +363,7 @@ void ApproachController::imagePerceptCallback(const hector_worldmodel_msgs::Imag
     }
 
     // visualize
+    usleep(20*1000);
     visualization_msgs::Marker markerTarget;
     markerTarget.header = intersectionPoseFixed.header;
     markerTarget.ns = "marker_target";
@@ -367,6 +376,7 @@ void ApproachController::imagePerceptCallback(const hector_worldmodel_msgs::Imag
     markerTarget.color.r = 1.0;
     markerTarget.color.b = 1.0;
     markerTarget.color.a = 1.0;
+    markerTarget.lifetime = ros::Duration(1.0);
     pub_vis_.publish(markerTarget);
 
     // store it!
@@ -377,6 +387,8 @@ void ApproachController::imagePerceptCallback(const hector_worldmodel_msgs::Imag
 bool ApproachController::lineIntersects(const tf::Vector3 & s1, const tf::Vector3 & e1,
         const tf::Vector3 & s2, const tf::Vector3 & e2, tf::Vector3 & intersection) 
 {
+    printf("ETT: %f %f\n", e2.x(), e2.y());
+    // FIXME lambda 1 AND 2 should be in
     tf::Vector3 d1 = e1 - s1;
     tf::Vector3 d2 = e2 - s2;
     tf::Vector3 b = s1 - s2;
@@ -402,6 +414,10 @@ bool ApproachController::lineIntersects(const tf::Vector3 & s1, const tf::Vector
     if(lambda1 < -0.1 || lambda1 > 1.1) {
         return false;
     }
+
+    ROS_INFO("s1: %f %f, e1: %f %f, d1: %f %f", s1.x(), s1.y(), e1.x(), e1.y(), d1.x(), d1.y());
+    ROS_INFO("s2: %f %f, e2: %f %f, d2: %f %f", s2.x(), s2.y(), e2.x(), e2.y(), d2.x(), d2.y());
+    ROS_INFO("lambda1: %f", lambda1);
 
     intersection = s1 + lambda1 * d1;
     return true;
@@ -468,6 +484,7 @@ void ApproachController::lineFeaturesCallback(const geometry_msgs::PoseArray & l
         marker.type = visualization_msgs::Marker::ARROW;
         marker.action = visualization_msgs::Marker::ADD;
         marker.pose = line_feature_pose_.pose;
+        marker.lifetime = ros::Duration(1.0);
         marker.scale.x = 0.25;
         marker.scale.y = 0.1;
         marker.scale.z = 0.1;
@@ -526,6 +543,7 @@ void ApproachController::laserCallback(const sensor_msgs::LaserScan & laser)
     marker.type = visualization_msgs::Marker::POINTS;
     marker.action = visualization_msgs::Marker::ADD;
     marker.pose.orientation.w = 1;
+    marker.lifetime = ros::Duration(1.0);
     marker.scale.x = 0.03;
     marker.scale.y = 0.03;
     marker.scale.z = 0.03;
@@ -608,6 +626,7 @@ tf::Pose ApproachController::getTargetPose(bool & valid)
     marker.type = visualization_msgs::Marker::ARROW;
     marker.action = visualization_msgs::Marker::ADD;
     marker.pose = poseRobot.pose;
+    marker.lifetime = ros::Duration(5.0);
     marker.scale.x = approach_dist_;
     marker.scale.y = 0.15;
     marker.scale.z = 0.15;
