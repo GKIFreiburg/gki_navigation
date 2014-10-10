@@ -12,6 +12,7 @@
 #include <vector>
 #include <laser_line_detection/LineList.h>
 #include <hector_worldmodel_msgs/ImagePercept.h>
+#include <nav_msgs/Odometry.h>
 #include <boost/thread/mutex.hpp>
 
 class ApproachController
@@ -29,6 +30,8 @@ class ApproachController
         void lineListCallback(const laser_line_detection::LineList & lineList);
 
         void imagePerceptCallback(const hector_worldmodel_msgs::ImagePercept & imagePercept);
+
+        void odomCallback(const nav_msgs::Odometry & odom);
 
         bool lineIntersects(const tf::Vector3 & p1s, const tf::Vector3 & p1e,
                 const tf::Vector3 & p2s, const tf::Vector3 & p2e, tf::Vector3 & intersection); 
@@ -59,6 +62,7 @@ class ApproachController
         boost::mutex tf_mutex_;
         tf::TransformListener tf_;
 
+        ros::Subscriber sub_odom_;
         ros::Subscriber sub_laser_;
         ros::Subscriber sub_line_features_;
         ros::Subscriber sub_line_features2_;
@@ -68,10 +72,14 @@ class ApproachController
         ros::Publisher pub_vel_;
         ros::Publisher pub_vis_;
 
+        boost::mutex odom_mutex_;
+        geometry_msgs::PoseStamped last_odom_pose_;
+        geometry_msgs::PoseStamped approach_start_pose_;
+
         // those need to be in fixed frame
         geometry_msgs::PoseStamped goal_pose_;
         boost::mutex marker_pose_mutex_;
-        geometry_msgs::PoseStamped marker_pose_;
+        std::vector<geometry_msgs::PoseStamped> marker_poses_;
         boost::mutex line_feature_pose_mutex_;
         geometry_msgs::PoseStamped line_feature_pose_;
         // also maybe lines to get perpendicular/project?

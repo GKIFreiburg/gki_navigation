@@ -32,6 +32,7 @@ ApproachController::ApproachController(const std::string & action_name, const st
     action_name_(action_name), fixed_frame_(fixed_frame),
     as_(nh_, action_name, boost::bind(&ApproachController::executeCB, this, _1), false)
 {
+    sub_odom_ = nh_.subscribe("odom", 2, &ApproachController::odomCallback, this);
     sub_laser_ = nh_.subscribe("base_scan_filtered", 2, &ApproachController::laserCallback, this);
     sub_line_features_ = nh_.subscribe("isolated_lines", 2, &ApproachController::lineFeaturesCallback, this);
     sub_line_features2_ = nh_.subscribe("connected_lines", 2, &ApproachController::lineFeaturesCallback, this);
@@ -74,11 +75,16 @@ void ApproachController::executeCB(const move_base_msgs::MoveBaseGoalConstPtr & 
             }
             tf_.transformPose(fixed_frame_,
                     goal->target_pose, goal_pose_);
+            goal_pose_.pose.position.z = goal->target_pose.pose.position.z; // keep the z value set from outside
         } catch(tf::TransformException & e) {
             ROS_ERROR("%s: TF Error: %s", __func__, e.what());
             as_.setAborted();
             return;
         }
+    }
+    {
+        boost::unique_lock<boost::mutex> scoped_lock(odom_mutex_);
+        approach_start_pose_ = last_odom_pose_;
     }
 
     visualization_msgs::Marker marker;
@@ -103,7 +109,7 @@ void ApproachController::executeCB(const move_base_msgs::MoveBaseGoalConstPtr & 
 
     {
         boost::unique_lock<boost::mutex> scoped_lock(marker_pose_mutex_);
-        marker_pose_.header.stamp = ros::Time(0);
+        marker_poses_.clear();
     }
 
     ros::Rate rate(10.0);
@@ -123,9 +129,28 @@ void ApproachController::executeCB(const move_base_msgs::MoveBaseGoalConstPtr & 
             }
         }
         ROS_INFO_THROTTLE(1.0, "ApproachController: min laser dist: %f", minX);
-        //TODO abort if we turned more than 40deg away
-        //TODO integrate markers, but don't fall for far away ones
-        //TODO why vis sometimes only one part.
+
+        geometry_msgs::PoseStamped cur_odom_pose;
+        {
+            boost::unique_lock<boost::mutex> scoped_lock(odom_mutex_);
+            cur_odom_pose = last_odom_pose_;
+        }
+        tf::Pose startPoseTf;
+        tf::Pose curPoseTf;
+        tf::poseMsgToTF(approach_start_pose_.pose, startPoseTf);
+        tf::poseMsgToTF(cur_odom_pose.pose, curPoseTf);
+        tf::Pose deltaPose = startPoseTf.inverseTimes(curPoseTf);
+        if(deltaPose.getOrigin().length() > 2.0) {    // driving for 2m is not good
+            as_.setAborted();
+            return;
+        }
+        // turning away more than 45 deg is also not good
+        if(tf::getYaw(deltaPose.getRotation()) > angles::from_degrees(45.0)) {
+            as_.setAborted();
+            return;
+        }
+        // FIXME: Maybe wait until we have a marker observation
+        // Or is it better to just go, changing perspective.
 
         // TODO maybe always succeed?
         bool poseOK = false;
@@ -220,6 +245,13 @@ void ApproachController::lineListCallback(const laser_line_detection::LineList &
     line_list_ = lineList;
 }
 
+void ApproachController::odomCallback(const nav_msgs::Odometry & odom)
+{
+    boost::unique_lock<boost::mutex> scoped_lock(odom_mutex_);
+    last_odom_pose_.header = odom.header;
+    last_odom_pose_.pose = odom.pose.pose;
+}
+
 void ApproachController::imagePerceptCallback(const hector_worldmodel_msgs::ImagePercept & imagePercept)
 {
     image_geometry::PinholeCameraModel model;
@@ -274,7 +306,7 @@ void ApproachController::imagePerceptCallback(const hector_worldmodel_msgs::Imag
     marker.scale.z = 0.2;
     marker.color.r = 1.0;
     marker.color.a = 1.0;
-    marker.lifetime = ros::Duration(1.0);
+    marker.lifetime = ros::Duration(2.0);
     marker.points.push_back(cameraLaserStart.point);
     marker.points.push_back(cameraLaserEnd.point);
     pub_vis_.publish(marker);
@@ -383,7 +415,7 @@ void ApproachController::imagePerceptCallback(const hector_worldmodel_msgs::Imag
 
     // store it!
     boost::unique_lock<boost::mutex> scoped_lock(marker_pose_mutex_);
-    marker_pose_ = intersectionPoseFixed;
+    marker_poses_.push_back(intersectionPoseFixed);
 }
 
 bool ApproachController::lineIntersects(const tf::Vector3 & s1, const tf::Vector3 & e1,
@@ -569,7 +601,10 @@ tf::Pose ApproachController::getTargetPose(bool & valid)
     geometry_msgs::PoseStamped bestPose;
     bool bestPoseFound = false;
 
-    {
+    // a hardcoded z value for the goal means the following:
+    // 1.0 - approach a number
+    // -1.0 - allows line_feature_pose_
+    if(goal_pose_.pose.position.z < 0) {
         boost::unique_lock<boost::mutex> scoped_lock(line_feature_pose_mutex_);
         double dtLineFeaturePose = (now - line_feature_pose_.header.stamp).toSec();
         //printf("AGE: %f\n", dtLineFeaturePose);
@@ -580,17 +615,33 @@ tf::Pose ApproachController::getTargetPose(bool & valid)
     }
     {
         boost::unique_lock<boost::mutex> scoped_lock(marker_pose_mutex_);
-        double dtMarkerPose = (now - marker_pose_.header.stamp).toSec();
-        //printf("MARKER AGE: %f\n", dtMarkerPose);
-        if(dtMarkerPose < 30.0) {
-            bestPose = marker_pose_;
-            bestPoseFound = true;
+        // Integrate markers
+        // TODO what if one is off way
+        if(!marker_poses_.empty()) {
+            double dtMarkerPose = (now - marker_poses_.back().header.stamp).toSec();
+            //printf("MARKER AGE: %f\n", dtMarkerPose);
+            if(dtMarkerPose < 30.0) {
+                bestPose.pose.position.x = 0;
+                bestPose.pose.position.y = 0;
+                bestPose.pose.position.z = 0;
+                forEach(const geometry_msgs::PoseStamped & pose, marker_poses_) {
+                    bestPose.pose.position.x += pose.pose.position.x;
+                    bestPose.pose.position.y += pose.pose.position.y;
+                    bestPose.pose.position.z += pose.pose.position.z;
+                    bestPoseFound = true;
+                }
+                bestPose.pose.position.x /= (double)marker_poses_.size();
+                bestPose.pose.position.y /= (double)marker_poses_.size();
+                bestPose.pose.position.z /= (double)marker_poses_.size();
+                bestPose.pose.orientation = marker_poses_.back().pose.orientation;
+            }
         }
     }
 
     if(!bestPoseFound) {
         // let's assume the goal is good,
         bestPose = goal_pose_;
+        bestPose.pose.position.z = 0.0;
     }
 
     // shift the pose out by 0.25 cm std for circles
