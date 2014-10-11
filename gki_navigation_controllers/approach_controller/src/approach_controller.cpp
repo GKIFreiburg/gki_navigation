@@ -180,7 +180,7 @@ void ApproachController::executeCB(const move_base_msgs::MoveBaseGoalConstPtr & 
                 return;
             }
             bool approachTooClose = false;
-            if(dist < 0.1) {
+            if(dist < 0.3) {
                 if(minX < approach_dist_) {
                     approachTooClose = true;
                 }
