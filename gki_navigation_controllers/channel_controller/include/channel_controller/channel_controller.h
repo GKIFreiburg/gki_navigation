@@ -5,6 +5,7 @@
 #include <nav_msgs/Odometry.h>
 #include <visualization_msgs/MarkerArray.h>
 #include "dynamicvoronoi/dynamicvoronoi.h"
+#include "channel_controller/applycalibration.h"
 
 namespace channel_controller
 {
@@ -164,6 +165,7 @@ namespace channel_controller
             costmap_2d::Costmap2DROS* costmap_ros_;
             costmap_2d::Costmap2D costmap_;
             DynamicVoronoi voronoi_;
+            ApplyCalibration calibration_;
 
             /// Current waypoint that we are approaching in the global plan.
             unsigned int current_waypoint_;

@@ -99,6 +99,8 @@ void ChannelController::initialize(std::string name,
     ROS_INFO("vis_max_dist: %f", vis_max_dist_);
     ROS_INFO("visualize_voronoi: %d", visualize_voronoi_);
 
+    calibration_.init();
+
     pub_markers_ = nhPriv.advertise<visualization_msgs::MarkerArray>("channel_markers", 1);
     pub_status_marker_ = nhPriv.advertise<visualization_msgs::Marker>("drive_channel_status", 1);
     pub_local_plan_ = nhPriv.advertise<nav_msgs::Path>("local_plan", 1);
@@ -681,7 +683,7 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
         cmd_vel.linear.x = sign(cmd_vel.linear.x) * stopped_tv_;    // drive at least stopped tv
     }
 
-    limitTwist(cmd_vel);
+    //limitTwist(cmd_vel);
 
     status.setChannelFollowChannel(channel_dir, tv_scale_reason, rv_scale_reason);
 
@@ -1020,12 +1022,14 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
 
     if(handleGoalTurn(cmd_vel, robot_pose, distToTarget, velStatus)) {
         // don't compute a channel, just turn to goal
+        cmd_vel = calibration_.lookup(cmd_vel);
         channelMarkers.markers.push_back(createChannelMarkers(std::vector<DriveChannel>(), 0.0, -1));
         pub_markers_.publish(channelMarkers);   // pub empty channels
         return true;
     }
 
     int getting_to_safe_wpt = getToSafeWaypoint(cmd_vel, robot_pose, relativeTarget, velStatus);
+    cmd_vel = calibration_.lookup(cmd_vel);
     if(getting_to_safe_wpt == 1) {
         return true;
     } else if(getting_to_safe_wpt == -1) {
@@ -1071,6 +1075,7 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
             2.0 * channels[best_idx].min_dist_);
 
     bool foundChannelCmd = computeVelocityForChannel(channels[best_idx], cmd_vel, velStatus);
+    cmd_vel = calibration_.lookup(cmd_vel);
     if(!foundChannelCmd) {
         ROS_ERROR("%s: Could not determine channel velocity", __func__);
     }
