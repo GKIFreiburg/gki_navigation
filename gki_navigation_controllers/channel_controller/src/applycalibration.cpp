@@ -1,32 +1,58 @@
 #include "channel_controller/applycalibration.h"
 
-ApplyCalibration::ApplyCalibration()
+ApplyCalibration::ApplyCalibration():loadSuccessful(false)
 {
 }
 
 void ApplyCalibration::init()
 {
     ros::NodeHandle nhPriv("~");
-    nhPriv.getParamCached("tv/data", data_tv);
+    XmlRpc::XmlRpcValue parameter_list;
+
     nhPriv.getParamCached("tv/resolution", res_tv);
     nhPriv.getParamCached("tv/start_value", start_tv);
+    nhPriv.getParamCached("tv/data", parameter_list);
+    if(parameter_list.getType() != XmlRpc::XmlRpcValue::TypeArray)
+    {
+        ROS_WARN("failed to initalize Calibration! Parameter not an array");
+        return;
+    }
+    for(int x = 0; x < parameter_list.size(); x++)
+    {
+        if(parameter_list[x].getType() != XmlRpc::XmlRpcValue::TypeDouble)
+        {
+            ROS_WARN("failed to initalize Calibration! Parameter not of type doulbe");
+            return;
+        }
+        data_tv.push_back(static_cast<double>(parameter_list[x]));
+        values_tv.push_back(start_tv+x*res_tv);
+    }
 
-    nhPriv.getParamCached("rv/data", data_rv);
     nhPriv.getParamCached("rv/resolution", res_rv);
     nhPriv.getParamCached("rv/start_value", start_rv);
+    nhPriv.getParamCached("rv/data", parameter_list);
+    if(parameter_list.getType() != XmlRpc::XmlRpcValue::TypeArray)
+    {
+        ROS_WARN("failed to initalize Calibration! Parameter not an array");
+        return;
+    }
+    for(int x = 0; x < parameter_list.size(); x++)
+    {
+        if(parameter_list[x].getType() != XmlRpc::XmlRpcValue::TypeDouble)
+        {
+            ROS_WARN("failed to initalize Calibration! Parameter not of type doulbe");
+            return;
+        }
+        data_rv.push_back(static_cast<double>(parameter_list[x]));
+        values_rv.push_back(start_rv+x*res_rv);
+    }
 
     if(data_tv.size() == 0)
     {
-        loadSuccessful = false;
+        ROS_WARN("failed to initalize Calibration!");
         return;
     }
-
-    for(size_t i = 0; i< data_rv.size();i++)
-    {
-        values_rv.push_back(start_rv+i*res_rv);
-        values_tv.push_back(start_tv+i*res_tv);
-    }
-
+    loadSuccessful = true;
 }
 
 geometry_msgs::Twist ApplyCalibration::lookup(geometry_msgs::Twist input)
@@ -43,10 +69,10 @@ geometry_msgs::Twist ApplyCalibration::lookup(geometry_msgs::Twist input)
     if(!loadSuccessful)
         return input;
 
-
     // get tv value
     up = std::upper_bound(values_tv.begin(), values_tv.end(), inTv);
     pos_up = (up - values_tv.begin());
+
     if(up == values_tv.begin())
     {
         // found the first element -> input is out of lower bound but may still be close by: interpolate between 1 and last calibration value
@@ -54,6 +80,8 @@ geometry_msgs::Twist ApplyCalibration::lookup(geometry_msgs::Twist input)
     }
     else if(up == values_tv.end())
     {
+        pos_up--; // decrement by one, as end points beyond the last value
+        up--; // decrement iterator by one to point at last value instead of end
         // it's possible that the input is out the upper bound, check if is out of upper bound
         if(inTv > *up)
         {
@@ -86,6 +114,9 @@ geometry_msgs::Twist ApplyCalibration::lookup(geometry_msgs::Twist input)
     }
     else if(up == values_rv.end())
     {
+        pos_up--; // decrement by one, as end points beyond the last value
+        up--; // decrement iterator by one to point at last value instead of end
+
         // it's possible that the input is out the upper bound, check if is out of upper bound
         if(inTv > *up)
         {

@@ -9,6 +9,7 @@
 #include <kobuki_msgs/Led.h>
 #include <boost/foreach.hpp>
 #include <std_msgs/Empty.h>
+#include <algorithm>
 #define forEach BOOST_FOREACH
 
 namespace channel_controller
@@ -16,7 +17,7 @@ namespace channel_controller
 
 PLUGINLIB_EXPORT_CLASS(channel_controller::ChannelController, nav_core::BaseLocalPlanner);
 
-ChannelController::ChannelController() : tf_(NULL), costmap_ros_(NULL), current_waypoint_(0)
+ChannelController::ChannelController() : tf_(NULL), costmap_ros_(NULL), current_waypoint_(0), use_laser_(true), use_costmap_(true)
 {
 }
 
@@ -49,12 +50,22 @@ void ChannelController::initialize(std::string name,
     ros::NodeHandle nhPriv("~/" + class_name);    // ~ = /move_base, our config should be in /move_base/name
     ros::NodeHandle nh;
 
+    nhPriv.param("use_laser", use_laser_, true);
+    nhPriv.param("use_costmap", use_costmap_, true);
+
     nhPriv.param("safe_waypoint_channel_width", safe_waypoint_channel_width_, 0.5);
+    nhPriv.param("safe_waypoint_channel_width_at_max_tv", safe_waypoint_channel_width_at_max_tv_, 0.5);
     nhPriv.param("safe_channel_width", safe_channel_width_, 0.4);
+    nhPriv.param("channel_score_da", channel_score_da_, 1.0);
+    nhPriv.param("channel_score_dist", channel_score_dist_, 0.3);
+
+    nhPriv.param("max_channel_length", max_channel_length_, 3.0);
+
     nhPriv.param("min_get_to_safe_dist_time", min_get_to_safe_dist_time_, 3.0);
     nhPriv.param("max_get_to_safe_dist_time", max_get_to_safe_dist_time_, 10.0);
 
     nhPriv.param("waypoint_reached_dist", waypoint_reached_dist_, 0.3);
+    nhPriv.param("waypoint_reached_dist_at_max_tv", waypoint_reached_dist_at_max_tv_, 0.3);
     nhPriv.param("waypoint_reached_angle", waypoint_reached_angle_, 7.0);
     nhPriv.param("goal_reached_dist", goal_reached_dist_, 0.1);
     nhPriv.param("goal_reached_angle", goal_reached_angle_, 0.22);
@@ -77,11 +88,17 @@ void ChannelController::initialize(std::string name,
     nhPriv.param("vis_max_dist", vis_max_dist_, 1.0);
     nhPriv.param("visualize_voronoi", visualize_voronoi_, false);
 
+    ROS_INFO("use_laser: %d", use_laser_);
+    ROS_INFO("use_costmap: %d", use_costmap_);
     ROS_INFO("safe_waypoint_channel_width: %f", safe_waypoint_channel_width_);
+    ROS_INFO("safe_waypoint_channel_width_at_max_tv: %f", safe_waypoint_channel_width_at_max_tv_);
     ROS_INFO("safe_channel_width: %f", safe_channel_width_);
+    ROS_INFO("channel_score_da: %f", channel_score_da_);
+    ROS_INFO("channel_score_dist: %f", channel_score_dist_);
     ROS_INFO("min_get_to_safe_dist_time: %f", min_get_to_safe_dist_time_);
     ROS_INFO("max_get_to_safe_dist_time: %f", max_get_to_safe_dist_time_);
     ROS_INFO("waypoint_reached_dist: %f", waypoint_reached_dist_);
+    ROS_INFO("waypoint_reached_dist_at_max_tv: %f", waypoint_reached_dist_at_max_tv_);
     ROS_INFO("waypoint_reached_angle: %f", waypoint_reached_angle_);
     ROS_INFO("goal_reached_dist: %f", goal_reached_dist_);
     ROS_INFO("goal_reached_angle: %f", goal_reached_angle_);
@@ -110,7 +127,8 @@ void ChannelController::initialize(std::string name,
 
     pub_call_clear_ = nh.advertise<std_msgs::Empty>("/call_clear", 1);
 
-    sub_odom_ = nh.subscribe("odom", 1, &ChannelController::odometryCallback, this);
+    sub_odom_ = nh.subscribe("odom", 2, &ChannelController::odometryCallback, this);
+    sub_laser_ = nh.subscribe("base_scan", 3, &ChannelController::laserCallback, this);
 
     //updateVoronoi();
 
@@ -125,16 +143,58 @@ bool ChannelController::updateVoronoi()
     ROS_ASSERT(costmap_.getSizeInCellsY() == voronoi_.getSizeY());
 
     std::vector<IntPoint> obstacles;
-    for(unsigned int x = 0; x < costmap_.getSizeInCellsX(); x++) {
-        for(unsigned int y = 0; y < costmap_.getSizeInCellsY(); y++) {
-            if(costmap_.getCost(x, y) >= costmap_2d::LETHAL_OBSTACLE) { // lethal and unknown
-                obstacles.push_back(IntPoint(x, y));
+    if(use_costmap_) {
+        for(unsigned int x = 0; x < costmap_.getSizeInCellsX(); x++) {
+            for(unsigned int y = 0; y < costmap_.getSizeInCellsY(); y++) {
+                if(costmap_.getCost(x, y) >= costmap_2d::LETHAL_OBSTACLE) { // lethal and unknown
+                    obstacles.push_back(IntPoint(x, y));
+                }
             }
         }
     }
+    float validRangesFrac = 0.0;
+    if(use_laser_) {
+        double dt = (ros::Time::now() - last_laser_.header.stamp).toSec();
+        //printf("LASER AGE: %f\n", dt);
+        if(dt > 0.2) {
+            ROS_ERROR("%s: Laser too old - age is: %f", __func__, dt);
+            return false;
+        }
+        // get tf from laser to costmap/voronoi frame
+        tf::StampedTransform transform;
+        try {
+            if(!tf_->waitForTransform(costmap_ros_->getGlobalFrameID(),
+                    last_laser_.header.frame_id, last_laser_.header.stamp, ros::Duration(0.1))) {
+                ROS_ERROR("Current Laser TF not available");
+                return false;
+            }
+            tf_->lookupTransform(costmap_ros_->getGlobalFrameID(),
+                    last_laser_.header.frame_id, last_laser_.header.stamp, transform);
+        } catch(tf::TransformException & e) {
+            ROS_ERROR("%s: TF Error: %s", __func__, e.what());
+            return false;
+        }
+        unsigned int validRanges = 0;   // to check if we got actual data, i.e. Go drive!
+        unsigned int endIdx = last_laser_.ranges.size();
+        endIdx = std::min(endIdx, 1000u); // start/end from index filter params
+        for(unsigned int i = 80; i < endIdx; i++) {
+            if(last_laser_.ranges[i] <= last_laser_.range_min || last_laser_.ranges[i] >= last_laser_.range_max)
+                continue;
+            validRanges++;
+            double da = last_laser_.angle_min + last_laser_.angle_increment * i;
+            tf::Vector3 pt(last_laser_.ranges[i] * cos(da), last_laser_.ranges[i] * sin(da), 0.0);
+            tf::Vector3 ptCostmap = transform * pt;
+            unsigned int ix, iy;
+            if(costmap_.worldToMap(ptCostmap.x(), ptCostmap.y(), ix, iy)) {
+                obstacles.push_back(IntPoint(ix, iy));
+            }
+        }
+        if(last_laser_.ranges.size() > 0)
+            validRangesFrac = (double)validRanges/(double)last_laser_.ranges.size();
+    }
     // If there are no obstacles, wait as a precaution (assume there always will be _some_)
     // Will stop in actual free space!
-    if(wait_for_obstacles_time_ > 0.0 && obstacles.empty()) {
+    if(wait_for_obstacles_time_ > 0.0 && obstacles.empty() && validRangesFrac < 0.2) {
         if(waiting_for_obstacles_start_time_ == ros::Time(0)) {
             // first time we got in here
             waiting_for_obstacles_start_time_ = ros::Time::now();
@@ -230,7 +290,7 @@ void ChannelController::visualizeVoronoi()
 
 bool ChannelController::isGoalReached()
 {
-    if(ros::Time::now() - last_odom_.header.stamp > ros::Duration(5.0)) {
+    if(ros::Time::now() - last_odom_.header.stamp > ros::Duration(0.5)) {
         ROS_ERROR_THROTTLE(1.0, "isGoalReached:: Last odom is too old: %f - not at goal.",
                 (ros::Time::now() - last_odom_.header.stamp).toSec());
         return false;
@@ -238,7 +298,7 @@ bool ChannelController::isGoalReached()
     double cur_tv = last_odom_.twist.twist.linear.x;
     double cur_rv = last_odom_.twist.twist.angular.z;
     if(current_waypoint_ >= global_plan_.size() &&
-            fabs(cur_tv) < stopped_tv_ && fabs(cur_rv) < stopped_rv_) {
+            fabs(cur_tv) < stopped_tv_ && fabs(cur_rv) < 2.0*min_inplace_rv_) {
         ROS_INFO("ChannelController: Goal Reached!");
         kobuki_msgs::Sound sound;
         sound.value = kobuki_msgs::Sound::CLEANINGEND;
@@ -300,11 +360,17 @@ bool ChannelController::currentWaypointReached() const
     tf::Stamped<tf::Pose> currentWaypoint = local_plan_.front();
     tf::Pose toWaypoint = robot_pose.inverseTimes(currentWaypoint);
 
-    double distThreshold = waypoint_reached_dist_;
+    double cur_tv = last_odom_.twist.twist.linear.x;
+    double distThreshold = waypoint_reached_dist_ + (waypoint_reached_dist_at_max_tv_ - waypoint_reached_dist_) *
+        straight_up(cur_tv, min_tv_, max_tv_);
     double angleThreshold = waypoint_reached_angle_;
     if(local_plan_.size() == 1) {   // only 1 wp left -> goal wp
         distThreshold = goal_reached_dist_;
-        angleThreshold = goal_reached_angle_;
+        if((ros::Time::now() - goal_turn_start_time_) < ros::Duration(5.0)) {
+            angleThreshold = goal_reached_angle_/2.0;
+        } else {
+            angleThreshold = goal_reached_angle_;
+        }
     }
 
     if(state_ != CSGoalTurn) {
@@ -541,14 +607,53 @@ void ChannelController::odometryCallback(const nav_msgs::Odometry & odom)
     last_odom_ = odom;
 }
 
+void ChannelController::laserCallback(const sensor_msgs::LaserScan & laser)
+{
+    last_laser_ = laser;
+}
+
 void ChannelController::limitTwist(geometry_msgs::Twist & cmd_vel) const
 {
+    // Whats the point of this fn: Basically prevent the impossible
+    // When we set a tv/rv traj, we still drive on that even if one
+    // of the values doesn't work
+    // just that we drive on it slower.
+    // That's what the result should be. Must make sure that always happens, especially
+    // when avoiding obstacles/braking
+    // Very important for collision avoidance.
+
+    // FIXME Zerg Hack, this should be done properly
+    // assuming no max_accel_rv
+    //
+    // If tv is small, we are either fast and braking hard
+    // or we are slow and accelerating
+    // In both cases, there is no need to limit.
+    if(fabs(cmd_vel.linear.x) < 2.0 * min_tv_) {
+        return;
+    }
+
     double cur_tv = last_odom_.twist.twist.linear.x;
     double cur_rv = last_odom_.twist.twist.angular.z;
 
-    double dt = (ros::Time::now() - last_cmd_vel_time_).toSec();  // estimated dt for commands
+    if(cur_tv * cmd_vel.linear.x < 0) {
+        if(fabs(cur_tv) < min_tv_) {    // special case near zero, no error
+            cur_tv = 0.0;
+        } else {
+            ROS_ERROR_THROTTLE(1.0, "%s: TV changes sign, cur: %f, target: %f - cannot handle this, not limiting!",
+                    __func__, cur_tv, cmd_vel.linear.x);
+        }
+        return;
+    }
+
+    // TODO dead reckoning option
+    //double dt = (ros::Time::now() - last_cmd_vel_time_).toSec();  // estimated dt for commands
+    double dt = (ros::Time::now() - last_odom_.header.stamp).toSec();  // estimated dt for commands
+    if(dt < 0) {
+        ROS_ERROR_THROTTLE(1.0, "%s: Got odometry from the future, dt: %f, setting 0",
+                __func__, dt);
+    }
     // If we haven't send commands for a while, we'll get an initial "kick"
-    // with a large dt
+    // with a large dt, this should be OK
     double dx_max = max_accel_tv_ * dt;
     double dth_max = max_accel_rv_ * dt;
 
@@ -559,37 +664,84 @@ void ChannelController::limitTwist(geometry_msgs::Twist & cmd_vel) const
     if(fabs(cmd_vel.linear.x - cur_tv) > dx_max) {
         twist_scale = dx_max/fabs(cmd_vel.linear.x - cur_tv);
     }
-    if(fabs(cmd_vel.angular.z - cur_rv) > dth_max) {
+    //ROS_DEBUG("twist_scale tv: %f ", twist_scale);
+    if(max_accel_rv_ > 0 && fabs(cmd_vel.angular.z - cur_rv) > dth_max) {
         twist_scale = std::min(twist_scale, dth_max/fabs(cmd_vel.angular.z - cur_rv));
     }
+    //ROS_DEBUG("twist_scale after rv: %f ", twist_scale);
 
     // scale both for same trajectory
     if(twist_scale < 1.0) {
-        geometry_msgs::Twist new_cmd_vel = cmd_vel;
-        new_cmd_vel.linear.x = twist_scale * cmd_vel.linear.x;
-        new_cmd_vel.angular.z = twist_scale * cmd_vel.angular.z;
-        //// check mins
-        //// FIXME Not relevant when scaling here?
-        //// -> we'd have a large delta anyways...
-        //if(fabs(cmd_vel.linear.x) < stopped_tv_) {
-        //    if(fabs(new_cmd_vel.angular.z) < min_inplace_rv_) {
-        //        new_cmd_vel.angular.z = sign(cmd_vel.angular.z) * min_inplace_rv_;
-        //    }
-        //} else {
-        //    if(fabs(new_cmd_vel.linear.x) < min_tv_)
-        //        new_cmd_vel.linear.x = sign(cmd_vel.linear.x) * min_tv_;
-        //    if(fabs(new_cmd_vel.angular.z) < min_rv_)
-        //        new_cmd_vel.angular.z = sign(cmd_vel.angular.z) * min_rv_;
-        //}
-        ROS_DEBUG("%s: Scaling cmd vel from %f, %f -> %f %f", __func__,
-                cmd_vel.linear.x, cmd_vel.angular.z,
-                new_cmd_vel.linear.x, new_cmd_vel.angular.z);
-        cmd_vel = new_cmd_vel;
+        // braking = we set a lower absolute speed OR we even reverse the speed
+        if(fabs(cmd_vel.linear.x) < fabs(cur_tv) || (cmd_vel.linear.x * cur_tv) < 0) {
+            ROS_DEBUG_THROTTLE(1.0, "Not scaling twist to accel limits as we are braking: old tv: %f target tv: %f", cur_tv, cmd_vel.linear.x);
+        } else {
+            geometry_msgs::Twist new_cmd_vel = cmd_vel;
+            new_cmd_vel.linear.x = cur_tv + twist_scale * 
+                (cmd_vel.linear.x - cur_tv);
+            // We need to get as close to the target traj given by tv/rv as possible
+            double ideal_scaled_rv = new_cmd_vel.linear.x/cmd_vel.linear.x * cmd_vel.angular.z;
+            if(max_accel_rv_ <= 0) {
+                new_cmd_vel.angular.z = ideal_scaled_rv;
+            } else {
+                // how close can we get
+                if(fabs(ideal_scaled_rv - cur_rv) > dth_max) {  // can't reach, take largest step
+                    if(ideal_scaled_rv < cur_rv) {
+                        new_cmd_vel.angular.z = cur_rv - dth_max;
+                    } else {
+                        new_cmd_vel.angular.z = cur_rv + dth_max;
+                    }
+                } else {
+                    new_cmd_vel.angular.z = ideal_scaled_rv;
+                }
+            }
+
+            //new_cmd_vel.angular.z = cur_rv + twist_scale *
+            //    (cmd_vel.angular.z - cur_rv);
+            //    //twist_scale * cmd_vel.angular.z;
+
+            // never scale at/near min vels
+            // never scale to/near min vels
+
+            //// check mins
+            //// FIXME Not relevant when scaling here?
+            //// -> we'd have a large delta anyways...
+            //if(fabs(cmd_vel.linear.x) < stopped_tv_) {
+            //    if(fabs(new_cmd_vel.angular.z) < min_inplace_rv_) {
+            //        new_cmd_vel.angular.z = sign(cmd_vel.angular.z) * min_inplace_rv_;
+            //    }
+            //} else {
+            //    if(fabs(new_cmd_vel.linear.x) < min_tv_)
+            //        new_cmd_vel.linear.x = sign(cmd_vel.linear.x) * min_tv_;
+            //    if(fabs(new_cmd_vel.angular.z) < min_rv_)
+            //        new_cmd_vel.angular.z = sign(cmd_vel.angular.z) * min_rv_;
+            //}
+            /*ROS_DEBUG("%s: dt: %f, dx_max: %f, dth_max: %f", __func__,
+                    dt, dx_max, dth_max);
+            ROS_DEBUG("%s: cur tv: %f target tv: %f, cur rv: %f, target rv: %f", __func__,
+                    cur_tv, cmd_vel.linear.x, cur_rv, cmd_vel.angular.z);*/
+            ROS_DEBUG("%s: Scaling cmd vel from %f, %f -> %f %f", __func__,
+                    cmd_vel.linear.x, cmd_vel.angular.z,
+                    new_cmd_vel.linear.x, new_cmd_vel.angular.z);
+            cmd_vel = new_cmd_vel;
+        }
     }
 }
 
 bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, geometry_msgs::Twist & cmd_vel, ScopedVelocityStatus & status) const
 {
+    // TODO make sure that channel length are until free and not until waypoint
+    // Maybe only if there is no more waypoints near it limit for corner racing
+    // BUT maybe we just stop quickly???
+    // goal approach is scaled with speed already
+    // TODO final speed advise is safty 
+    // 2. think about channel selection as in what do we want/need
+    // a) for close quarters
+    // b) for high speed open area (later, also need to check how global plans look there)
+    // c) dont tune too much towards global plan - dynamic obst are NOT in there and the dist counts
+    // -- more: think about why channels with dist arent on global plan, can we pause and observe?
+    // 3. redo speed selection with fast and safe
+
     ROS_ASSERT(!local_plan_.empty());
     cmd_vel = geometry_msgs::Twist();   // init to 0
 
@@ -602,15 +754,16 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
     // FIXME later: maybe look ahead if next waypoints are on the same channels: GO!
 
     // channel way different, stop first, then turn in place
+    double cur_tv = last_odom_.twist.twist.linear.x;
+    double cur_rv = last_odom_.twist.twist.angular.z;
     if(fabs(channel_dir) > angles::from_degrees(45)) {
-        double cur_tv = last_odom_.twist.twist.linear.x;
         //double cur_rv = last_odom_.twist.twist.angular.z;
         if(fabs(cur_tv) < stopped_tv_) {
             // Just turn full. We're stopped and way in the wrong direction
             cmd_vel.angular.z = max_rv_ * sign(channel_dir);
-            status.setChannelTurnToChannel(channel_dir, cur_tv);
+            status.setChannelTurnToChannel(channel_dir, cur_tv, cur_rv);
         } else {    // else: stop (0)
-            status.setChannelStopToTurn(channel_dir, cur_tv);
+            status.setChannelStopToTurn(channel_dir, cur_tv, cur_rv);
         }
 
         return true;
@@ -622,16 +775,18 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
 
     // FIXME later use width as main scaling? relate to robot?
 
+    // TODO align those to max values with time
+
     // speed up if there is space
-    cmd_vel.linear.x = min_tv_ + (max_tv_ - min_tv_) *
-        straight_up(channel_length, 0.3, 2.0);
+    double channel_length_tv_scale = straight_up(channel_length, 0.3, 2.0);
 
     // go slower forward if we aren't pointing in the right direction
     double bad_direction_tv_scale =
         straight_down(fabs(channel_dir), angles::from_degrees(10.0), angles::from_degrees(60.0));
 
     // go slower when narrow FIXME later: maybe only when narrow within where we are (not at end of channel)
-    double channel_width_tv_scale = straight_up(channel_width, 0.4, 1.0);
+    double channel_width_tv_scale = straight_up(channel_width,
+                safe_waypoint_channel_width_, safe_waypoint_channel_width_at_max_tv_);
 
     // for now ignore close to wp unless goal.
     double close_to_goal_tv_scale = 1.0;
@@ -649,6 +804,9 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
     double tv_scale = bad_direction_tv_scale;
     if(tv_scale < 1.0)
         tv_scale_reason = "bad_direction";
+    tv_scale = std::min(tv_scale, channel_length_tv_scale);
+    if(tv_scale == channel_length_tv_scale)
+        tv_scale_reason = "channel_length";
     tv_scale = std::min(tv_scale, channel_width_tv_scale);
     if(tv_scale == channel_width_tv_scale)
         tv_scale_reason = "channel_width";
@@ -665,7 +823,11 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
     if(rv_scale >= 0.99)
         rv_scale_reason = "none";
 
-    cmd_vel.linear.x *= 0.2 + 0.8 * tv_scale;
+    // TODO the relationship and scaling for rv/tv should more use
+    // absolute values matched to the max values
+    // not just a factor of the max, i.e. high max rv will turn to rapidly
+    // when tv max isn't that high, i.e. the combination isn't good.
+    cmd_vel.linear.x = min_tv_ + (max_tv_ - min_tv_) * tv_scale;
     cmd_vel.angular.z *= 0.2 + 0.8 * rv_scale;
 
     // Let's make sure we're not below the min values
@@ -685,7 +847,7 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
 
     //limitTwist(cmd_vel);
 
-    status.setChannelFollowChannel(channel_dir, tv_scale_reason, rv_scale_reason);
+    status.setChannelFollowChannel(channel_dir, cur_tv, cur_rv, tv_scale_reason, rv_scale_reason);
 
     return true;
 }
@@ -730,6 +892,8 @@ bool ChannelController::handleGoalTurn(geometry_msgs::Twist & cmd_vel,
 
         if(distToTarget > goal_reached_dist_)   // approaching goal but not near enough yet
             return false;
+
+        goal_turn_start_time_ = ros::Time::now();
     }
 
     state_ = CSGoalTurn;   // latch this once we're in here - stay
@@ -742,12 +906,13 @@ bool ChannelController::handleGoalTurn(geometry_msgs::Twist & cmd_vel,
 
     double da = angles::normalize_angle(tf::getYaw(toWaypoint.getRotation())); 
     double curTv = last_odom_.twist.twist.linear.x;
+    double curRv = last_odom_.twist.twist.angular.z;
     if(fabs(curTv) < stopped_tv_) {
         cmd_vel.angular.z = sign(da) * (min_inplace_rv_ + (max_rv_ - min_inplace_rv_) *
                 straight_up(fabs(da), angles::from_degrees(10.0), angles::from_degrees(90.0)));
-        status.setAtGoalPosTurnToGoal(da, curTv);
+        status.setAtGoalPosTurnToGoal(da, curTv, curRv);
     } else {    // else: stop (0)
-        status.setAtGoalPosStopToTurn(da, curTv);
+        status.setAtGoalPosStopToTurn(da, curTv, curRv);
     }
 
     return true;
@@ -810,7 +975,7 @@ int ChannelController::getToSafeWaypoint(geometry_msgs::Twist & cmd_vel,
     std::vector<DriveChannel> safe_channels = computeChannels(robotPose, relativeTarget,
             safe_channel_width_/2.0);
     if(safe_channels.empty()) {
-        ROS_ERROR("Could find no safe_channels - recovery needed");
+        ROS_ERROR_THROTTLE(1.0, "Could find no safe_channels - recovery needed");
         return -1;
     }
 
@@ -821,7 +986,7 @@ int ChannelController::getToSafeWaypoint(geometry_msgs::Twist & cmd_vel,
             safe_waypoint_state_ == SWSBestBackwardsChannelTurnOut)
         best_idx = evaluateSafeChannels(safe_channels, true);
     if(best_idx < 0) {
-        ROS_ERROR("Could not find best safe channel");
+        ROS_ERROR_THROTTLE(1.0, "Could not find best safe channel");
         return -1;
     }
 
@@ -849,7 +1014,7 @@ std::vector<DriveChannel> ChannelController::computeChannels(const tf::Pose & ro
         // point in da, along up to the whole costmap length
         tf::Pose relativeTargetDir(relativeTarget.getRotation(),
                 relativeTarget.getOrigin().normalized() *
-                    (costmap_.getSizeInMetersX() + costmap_.getSizeInMetersY()));
+                    max_channel_length_);
         tf::Pose rotTarget = robotPose * rotDir * relativeTargetDir;
 
         DriveChannel channel = computeChannel(robotPose, rotTarget, minDist);
@@ -873,11 +1038,11 @@ double ChannelController::computeChannelScore(double da, double dist) const
     // - Score by da (try to get there first)
     // => Make this a smooth transition
     double da_score = 0.5 * (cos(fabs(da)) + 1.0);  // [0..1] based on cos -> 1.0 for da = 0.0
-    // keeping dist_score influence very conservative for now.
-    // A 20% wider channel gets a bit more score.
-    double dist_score = straight_up(dist, safe_channel_width_/2.0, 1.2 * safe_waypoint_channel_width_/2.0);
-                //1.0 * costmap_ros_->getInscribedRadius());
-    double score = da_score * dist_score;
+    //// keeping dist_score influence very conservative for now.
+    //// A 20% wider channel gets a bit more score.
+    //double dist_score = straight_up(dist, safe_channel_width_/2.0, 1.2 * safe_waypoint_channel_width_/2.0);
+    double dist_score = straight_up(dist, safe_waypoint_channel_width_/2.0, safe_waypoint_channel_width_at_max_tv_/2.0);
+    double score = channel_score_da_ * da_score + channel_score_dist_ * dist_score;
     return score;
 }
 
@@ -956,17 +1121,17 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
     cmd_vel = geometry_msgs::Twist();   // init to 0
     ScopedVelocityStatus velStatus(cmd_vel, pub_status_marker_, pub_sound_, pub_led_, costmap_ros_);
 
+    if(ros::Time::now() - last_odom_.header.stamp > ros::Duration(0.5)) {
+        ROS_ERROR("Last odom is too old: %f - cannot produce commands.",
+                (ros::Time::now() - last_odom_.header.stamp).toSec());
+        return false;
+    }
     if(!updateVoronoi()) {
         ROS_ERROR_THROTTLE(1.0, "updateVoronoi failed.");
         return false;
     }
 
     if(!localizeGlobalPlan(current_waypoint_)) {
-        return false;
-    }
-    if(ros::Time::now() - last_odom_.header.stamp > ros::Duration(5.0)) {
-        ROS_ERROR("Last odom is too old: %f - cannot produce commands.",
-                (ros::Time::now() - last_odom_.header.stamp).toSec());
         return false;
     }
 
@@ -1033,16 +1198,30 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
     if(getting_to_safe_wpt == 1) {
         return true;
     } else if(getting_to_safe_wpt == -1) {
-        ROS_ERROR("getToSafeWaypoint failed.");
+        ROS_ERROR_THROTTLE(1.0, "getToSafeWaypoint failed.");
         velStatus.setNoSafeChannel();
         return false;
     } else if(getting_to_safe_wpt == -2) {
-        ROS_INFO("getToSafeWaypoint succeeded - querying new global plan.");
+        ROS_INFO_THROTTLE(1.0, "getToSafeWaypoint succeeded - querying new global plan.");
         return false;
     }
 
+    // TODO must occur everywhere, where we use this for scaling, etc.
+    // check locations
+    // HERE, safe waypoint, scoring
+    double cur_tv = last_odom_.twist.twist.linear.x;
+    double min_channel_width = safe_waypoint_channel_width_ +
+        (safe_waypoint_channel_width_at_max_tv_ - safe_waypoint_channel_width_) *
+        straight_up(cur_tv, min_tv_, max_tv_);
+    // TODO need to be more aggressive here, otherwise never channels
+    // TODO aspect ratio channels?
     std::vector<DriveChannel> channels = computeChannels(robot_pose, relativeTarget,
-            safe_waypoint_channel_width_/2.0);
+            min_channel_width/2.0);
+    // aspect could be for socring
+    // Maybe something here: best ideal chans, then go down in what we need - drive those more convervative.
+    // more convervative can punish width a lot
+    if(channels.size() == 0)
+        channels = computeChannels(robot_pose, relativeTarget, safe_waypoint_channel_width_/2.0);
     if(channels.size() == 0) {
         ROS_WARN("No safe_waypoint_channel_width channels found - switching to CSGetToSafeWaypointDist");
         state_ = CSGetToSafeWaypointDist;
@@ -1080,6 +1259,8 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
         ROS_ERROR("%s: Could not determine channel velocity", __func__);
     }
 
+    ROS_DEBUG("%sSending cmd vel: %f %f", foundChannelCmd ? "" : "NOT ", cmd_vel.linear.x, cmd_vel.angular.z);
+
     last_cmd_vel_time_ = ros::Time::now();
     return foundChannelCmd;
 }
@@ -1099,43 +1280,49 @@ ChannelController::ScopedVelocityStatus::~ScopedVelocityStatus()
     publishStatus();
 }
 
-void ChannelController::ScopedVelocityStatus::setAtGoalPosStopToTurn(double angle_to_goal, double cur_tv)
+void ChannelController::ScopedVelocityStatus::setAtGoalPosStopToTurn(double angle_to_goal, double cur_tv, double cur_rv)
 {
     status << "At Goal Pos" << std::endl <<
         "-> Stop to turn" << std::endl <<
-        "Angle: " << angle_to_goal << " Cur TV: " << cur_tv << std::endl;
+        "Angle: " << angles::to_degrees(angle_to_goal) << " deg" << std::endl <<
+        "Cur TV: " << cur_tv << " Cur RV: " << angles::to_degrees(cur_rv) << " deg/s" << std::endl;
     state = CSGoalTurn;
 }
 
-void ChannelController::ScopedVelocityStatus::setAtGoalPosTurnToGoal(double angle_to_goal, double cur_tv)
+void ChannelController::ScopedVelocityStatus::setAtGoalPosTurnToGoal(double angle_to_goal, double cur_tv, double cur_rv)
 {
     status << "At Goal Pos" << std::endl <<
         "-> Turn to goal" << std::endl <<
-        "Angle: " << angle_to_goal << " Cur TV: " << cur_tv << std::endl;
+        "Angle: " << angles::to_degrees(angle_to_goal) << std::endl <<
+        "Cur TV: " << cur_tv << " Cur RV: " << angles::to_degrees(cur_rv) << " deg/s" << std::endl;
     state = CSGoalTurn;
 }
 
-void ChannelController::ScopedVelocityStatus::setChannelStopToTurn(double rel_channel_dir, double cur_tv)
+void ChannelController::ScopedVelocityStatus::setChannelStopToTurn(double rel_channel_dir, double cur_tv, double cur_rv)
 {
     status << "Follow Channel" << std::endl <<
         "-> Stop to turn" << std::endl <<
-        "Angle: " << rel_channel_dir << " Cur TV: " << cur_tv << std::endl;
+        "Angle: " << angles::to_degrees(rel_channel_dir) << std::endl <<
+        "Cur TV: " << cur_tv << " Cur RV: " << angles::to_degrees(cur_rv) << " deg/s" << std::endl;
     state = CSFollowChannel;
 }
 
-void ChannelController::ScopedVelocityStatus::setChannelTurnToChannel(double rel_channel_dir, double cur_tv)
+void ChannelController::ScopedVelocityStatus::setChannelTurnToChannel(double rel_channel_dir, double cur_tv, double cur_rv)
 {
     status << "Follow Channel" << std::endl <<
         "-> Turn to channel" << std::endl <<
-        "Angle: " << rel_channel_dir << " Cur TV: " << cur_tv << std::endl;
+        "Angle: " << angles::to_degrees(rel_channel_dir) << std::endl <<
+        "Cur TV: " << cur_tv << " Cur RV: " << angles::to_degrees(cur_rv) << " deg/s" << std::endl;
     state = CSFollowChannel;
 }
 
 void ChannelController::ScopedVelocityStatus::setChannelFollowChannel(double rel_channel_dir,
+        double cur_tv, double cur_rv,
         const std::string & tv_scale, const std::string & rv_scale)
 {
     status << "Follow Channel" << std::endl <<
-        "Angle: " << rel_channel_dir << std::endl <<
+        "Angle: " << angles::to_degrees(rel_channel_dir) << std::endl <<
+        "Cur TV: " << cur_tv << " Cur RV: " << angles::to_degrees(cur_rv) << " deg/s" << std::endl <<
         "TV limited: " << tv_scale << std::endl <<
         "RV limited: " << rv_scale << std::endl;
     state = CSFollowChannel;
@@ -1190,6 +1377,9 @@ void ChannelController::ScopedVelocityStatus::publishStatus()
     statusMarker.action = visualization_msgs::Marker::ADD;
     statusMarker.text = status.str();
     statusMarker.scale.z = 0.25;
+
+    //ROS_INFO("Status: %s", status.str().c_str());
+
     // put status marker near robot
     tf::Stamped<tf::Pose> robot_pose;
     if(!costmap->getRobotPose(robot_pose)) {

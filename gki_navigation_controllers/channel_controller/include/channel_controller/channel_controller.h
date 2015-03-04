@@ -3,6 +3,7 @@
 
 #include <nav_core/base_local_planner.h>
 #include <nav_msgs/Odometry.h>
+#include <sensor_msgs/LaserScan.h>
 #include <visualization_msgs/MarkerArray.h>
 #include "dynamicvoronoi/dynamicvoronoi.h"
 #include "channel_controller/applycalibration.h"
@@ -54,14 +55,15 @@ namespace channel_controller
                     ~ScopedVelocityStatus();
 
                     // goal approach
-                    void setAtGoalPosStopToTurn(double angle_to_goal, double cur_tv);
-                    void setAtGoalPosTurnToGoal(double angle_to_goal, double cur_tv);
+                    void setAtGoalPosStopToTurn(double angle_to_goal, double cur_tv, double cur_rv);
+                    void setAtGoalPosTurnToGoal(double angle_to_goal, double cur_tv, double cur_rv);
 
                     // default channel behaviors
-                    void setChannelStopToTurn(double rel_channel_dir, double cur_tv);
-                    void setChannelTurnToChannel(double rel_channel_dir, double cur_tv);
+                    void setChannelStopToTurn(double rel_channel_dir, double cur_tv, double cur_rv);
+                    void setChannelTurnToChannel(double rel_channel_dir, double cur_tv, double cur_rv);
 
                     void setChannelFollowChannel(double rel_channel_dir,
+                            double cur_tv, double cur_rv,
                             const std::string & tv_scale, const std::string & rv_scale);
 
                     // failures/recoveries
@@ -156,6 +158,7 @@ namespace channel_controller
             }
 
             void odometryCallback(const nav_msgs::Odometry & odom);
+            void laserCallback(const sensor_msgs::LaserScan & laser);
 
             double straight_up(double x, double a, double b) const;
             double straight_down(double x, double a, double b) const;
@@ -175,6 +178,7 @@ namespace channel_controller
             /// starting at the current_waypoint_
             std::vector< tf::Stamped<tf::Pose> > local_plan_;
 
+            ros::Subscriber sub_laser_;
             ros::Subscriber sub_odom_;
             ros::Publisher pub_markers_;
             ros::Publisher pub_status_marker_;
@@ -185,6 +189,7 @@ namespace channel_controller
             ros::Publisher pub_call_clear_;
 
             nav_msgs::Odometry last_odom_;
+            sensor_msgs::LaserScan last_laser_;
 
             ros::Time last_cmd_vel_time_;   ///< last time we send a command
 
@@ -194,10 +199,14 @@ namespace channel_controller
 
             ros::Time last_progress_time_;
 
+            ros::Time goal_turn_start_time_;
+
             enum ChannelControllerState state_;
             enum SafeWaypointState safe_waypoint_state_;
 
             // Controller Parameters
+            bool use_laser_;
+            bool use_costmap_;
 
             /// Minimum channel width that is allowed to steer to a waypoint
             /** 
@@ -211,14 +220,21 @@ namespace channel_controller
              * If we get to max_get_to_safe_dist_time_ we need recoveries.
              */
             double safe_waypoint_channel_width_;
+            double safe_waypoint_channel_width_at_max_tv_;
             /// Minimum channel width that is allowed at all
             double safe_channel_width_;
+
+            double max_channel_length_;
+
+            double channel_score_da_;
+            double channel_score_dist_;
 
             double min_get_to_safe_dist_time_;
             double max_get_to_safe_dist_time_;
 
             /// Waypoints within this are considered reached (unless goal wpt)
             double waypoint_reached_dist_;
+            double waypoint_reached_dist_at_max_tv_;
             double waypoint_reached_angle_;
             /// Goal waypoint is considered reached
             double goal_reached_dist_;
