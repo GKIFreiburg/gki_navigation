@@ -8,10 +8,17 @@
   <license>BSD</license>
   <review status="unreviewed" notes=""/>
   <url>http://ros.org/wiki/reactive_move_controller</url>
+  <depend package="nav_core"/>
   <depend package="tf"/>
+  <depend package="angles"/>
   <depend package="sensor_msgs"/>
   <depend package="geometry_msgs"/>
+  <depend package="pluginlib"/>
   <depend package="visualization_msgs"/>
+
+  <export>
+    <nav_core plugin="${prefix}/channel_controller_plugins.xml" />
+  </export>
 
 </package>
 

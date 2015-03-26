@@ -2,39 +2,120 @@
 #include <sensor_msgs/LaserScan.h>
 #include <geometry_msgs/Twist.h>
 #include <geometry_msgs/Point.h>
+#include <geometry_msgs/PoseStamped.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <vector>
 #include <math.h>
-#include "Channel.h"
+#include <tf/tf.h>
+#include <tf/transform_listener.h>
+#include "reactive_move_controller/Channel.h"
 
+ros::Subscriber goal_subscriber;
 ros::Subscriber laser_subscriber;
-ros::Publisher velocity_publisher;
 ros::Publisher visualization_publisher;
+tf::TransformListener* listener;
+ros::Publisher velocity_publisher;
 int stuck = 0;
 int zufall = 0;
+geometry_msgs::PoseStamped goal;
+bool goal_reached = true;
 
 std::vector <Channel> laser_channels;
+
+void goal_callback(geometry_msgs::PoseStampedPtr msg)
+{
+	goal = *msg;
+	ROS_INFO_STREAM("new goal: "<<*msg);
+	goal_reached = false;
+	visualization_msgs::MarkerArray vis_msg;
+	vis_msg.markers.push_back(visualization_msgs::Marker());
+	    visualization_msgs::Marker& marker = vis_msg.markers.back();
+	    marker.type = visualization_msgs::Marker::ARROW;
+	    marker.header.frame_id = msg->header.frame_id;
+	    marker.color.a = 1.0;
+	    marker.color.r = 1.0;
+	    marker.color.g = 1.0;
+	    marker.color.b = 1.0;
+	    marker.action = visualization_msgs::Marker::ADD;
+	    marker.ns = "goal";
+	    marker.id = 0;
+	    marker.pose.orientation.w = 1;
+	    marker.scale.x = 0.15;
+	    marker.scale.y = 0.1;
+	    marker.scale.z = 0.1;
+	    marker.pose = goal.pose;
+
+
+	    visualization_publisher.publish(vis_msg);
+}
+
+void compute_goal_angle(double& angle, double& distance, const std::string& laser_frame_id)
+{
+	tf::Pose goal_tf;
+	tf::poseMsgToTF(goal.pose, goal_tf);
+	tf::StampedTransform robot_pose;
+	tf::Pose goal_from_robot_tf;
+	try
+	{
+		//ROS_INFO_STREAM("frameid: "<<laser_frame_id<<" frameid2: "<<goal.header.frame_id);
+		listener->lookupTransform(goal.header.frame_id, laser_frame_id, ros::Time(0), robot_pose);
+		goal_from_robot_tf = robot_pose.inverseTimes(goal_tf);
+		//geometry_msgs::Pose transformed_goal;
+		//tf::poseTFToMsg(robot_pose, transformed_goal);
+		//ROS_INFO_STREAM("transformed goal: "<<transformed_goal);
+	}
+	catch (tf::TransformException& ex)
+	{
+		ROS_ERROR("%s", ex.what());
+		//ros::Duration(1.0).sleep();
+	}
+	//geometry_msgs::Pose transformed_goal;
+	//tf::poseTFToMsg(goal_from_robot_tf, transformed_goal);
+	//ROS_INFO_STREAM("transformed goal: "<<transformed_goal);
+	tf::Vector3 point = goal_from_robot_tf.getOrigin();
+	angle = atan2(point.y(), point.x());
+	distance = hypot(point.x(), point.y());
+
+}
 
 void laser_channel_callback(sensor_msgs::LaserScanConstPtr msg)
 {
 	visualization_msgs::MarkerArray vis_msg;
+	double goal_angle = 0;
+	double goal_distance = 0;
+	if (goal_reached == false)
+	compute_goal_angle(goal_angle, goal_distance, msg->header.frame_id);
+	if (goal_distance < 0.25)
+	{
+		vis_msg.markers.push_back(visualization_msgs::Marker());
+		visualization_msgs::Marker& marker = vis_msg.markers.back();
+		marker.action = visualization_msgs::Marker::DELETE;
+		marker.ns = "goal";
+		marker.id = 0;
+		marker.header.frame_id = "/odom";
+	    goal_reached = true;
 
+	}
 	// all channels update
 	for (size_t index = 0; index < laser_channels.size(); index++)
     {
-	    laser_channels[index].laser_update(msg);
-	}
+	    laser_channels[index].laser_update(*msg, goal_distance, goal_reached);
+	    laser_channels[index].to_string();
+    }
 	// find best channel
 	double score = 0;
 	size_t channel_index = 0;
 	for(size_t index = 0; index < laser_channels.size(); index++)
 	{
-		if(laser_channels[index].compute_score()>score)
+		if(laser_channels[index].compute_score(goal_angle, goal_reached)>score)
 		{
-			score = laser_channels[index].compute_score();
+			score = laser_channels[index].compute_score(goal_angle, goal_reached);
 			channel_index = index;
+
 		}
 	}
+
+	//ROS_INFO_STREAM("Score: "<<score);
 	// set velocity
 	geometry_msgs::Twist velocity;
 
@@ -42,7 +123,7 @@ void laser_channel_callback(sensor_msgs::LaserScanConstPtr msg)
 	// visualize
 	for (size_t index = 0; index < laser_channels.size(); index++)
 	{
-		laser_channels[index].visualize(vis_msg, msg->header.frame_id, index);
+		laser_channels[index].visualize(vis_msg, msg->header.frame_id, index, goal_angle, goal_reached);
 	}
 
     velocity_publisher.publish(velocity);
@@ -236,26 +317,30 @@ int main(int argc, char** argv)
 {
     // initialize
     ros::init(argc, argv, "reactive_move_controller");
-    ros::NodeHandle nh;
+    ros::NodeHandle nh;\
+    //ROS_INFO_STREAM(0/0);
 
 
-	laser_channels.push_back(Channel(0.0, 0.5));
+	laser_channels.push_back(Channel(0.0, 0.55));
     for (size_t index = 1; index < 8; index++)
     {
     	double angle = index*15.0/180.0*M_PI;
-    	laser_channels.push_back(Channel(angle, 0.5));
-    	laser_channels.push_back(Channel(-angle, 0.5));
+    	laser_channels.push_back(Channel(angle, 0.55));
+    	laser_channels.push_back(Channel(-angle, 0.55));
     }
     for (size_t index = 0; index < 3; index++)
     {
     	double angle = (index*15.0+7.5)/180.0*M_PI;
-    	laser_channels.push_back(Channel(angle, 0.5));
-    	laser_channels.push_back(Channel(-angle, 0.5));
+    	laser_channels.push_back(Channel(angle, 0.55));
+    	laser_channels.push_back(Channel(-angle, 0.55));
     }
     ROS_INFO_STREAM("Channels: "<<laser_channels.size());
-
+    goal.header.frame_id = "/odom";
+    listener = new tf::TransformListener();
     ROS_INFO("subscribing to laser topic...");
     laser_subscriber = nh.subscribe("base_scan", 1, laser_channel_callback);
+    ROS_INFO("subscribing to laser topic...");
+    goal_subscriber = nh.subscribe("/move_base_simple/goal", 1, goal_callback);
     ROS_INFO("advertizing command velocity topic...");
     velocity_publisher = nh.advertise<geometry_msgs::Twist>("command_velocity", 1, false);
     visualization_publisher = nh.advertise<visualization_msgs::MarkerArray>("visualization", 1, false);

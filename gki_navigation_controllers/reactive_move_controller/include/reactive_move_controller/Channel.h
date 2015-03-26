@@ -20,18 +20,20 @@ public:
 	Channel(double angle, double width);
 	virtual ~Channel();
 
-	void laser_update(sensor_msgs::LaserScanConstPtr msg);
-	double compute_score();
+	void laser_update(const sensor_msgs::LaserScan& laser_scan, double goal_distance, bool goal_reached);
+	double compute_score(const double & goal_angle, bool goal_reached);
 	void get_velocity(geometry_msgs::Twist& velocity);
-	void visualize(visualization_msgs::MarkerArray& vis_msg, const std::string& frame_id, int marker_id);
-
+	void visualize(visualization_msgs::MarkerArray& vis_msg, const std::string& frame_id, int marker_id, const double & goal_angle, bool goal_reached);
+	void to_string();
 private:
 	double length;
 	double width;
 	double angle;
+	double goal_distance;
 	double max_velocity;
 	double max_length;
 	double max_angular_velocity;
+	double robot_length;
 };
 
 #endif /* SRC_CHANNEL_H_ */
