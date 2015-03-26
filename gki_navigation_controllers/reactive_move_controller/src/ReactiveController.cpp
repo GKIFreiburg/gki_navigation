@@ -6,6 +6,7 @@
  */
 #include <pluginlib/class_list_macros.h>
 #include "reactive_move_controller/ReactiveController.h"
+#include <visualization_msgs/MarkerArray.h>
 
 PLUGINLIB_EXPORT_CLASS(ReactiveController, nav_core::BaseLocalPlanner);
 
@@ -14,6 +15,8 @@ ReactiveController::ReactiveController()
 	listener = NULL;
 	goal_reached = true;
 	min_goal_distance = 0.5;
+	goal_angle = 0;
+	goal_distance = 0;
 }
 
 ReactiveController::~ReactiveController()
@@ -58,9 +61,8 @@ void ReactiveController::compute_goal_angle(double& angle, double& distance, con
 
 bool ReactiveController::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
 {
+	compute_robot_pose_in_plan(laser_scan.header.frame_id);
 	visualization_msgs::MarkerArray vis_msg;
-	double goal_angle = 0;
-	double goal_distance = 0;
 	if (goal_reached == false)
 		compute_goal_angle(goal_angle, goal_distance, laser_scan.header.frame_id);
 	if (goal_distance < 0.25)
@@ -68,7 +70,7 @@ bool ReactiveController::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
 		vis_msg.markers.push_back(visualization_msgs::Marker());
 		visualization_msgs::Marker& marker = vis_msg.markers.back();
 		marker.action = visualization_msgs::Marker::DELETE;
-		marker.ns = "goal";
+		marker.ns = "temporary goal";
 		marker.id = 0;
 		marker.header.frame_id = "/odom";
 	    goal_reached = true;
@@ -125,7 +127,6 @@ void ReactiveController::initialize(std::string name, tf::TransformListener* tf,
     ros::NodeHandle nh;\
     //ROS_INFO_STREAM(0/0);
 
-
 	laser_channels.push_back(Channel(0.0, 0.55));
     for (size_t index = 1; index < 8; index++)
     {
@@ -139,6 +140,7 @@ void ReactiveController::initialize(std::string name, tf::TransformListener* tf,
     	laser_channels.push_back(Channel(angle, 0.55));
     	laser_channels.push_back(Channel(-angle, 0.55));
     }
+
     ROS_INFO_STREAM("Channels: "<<laser_channels.size());
     listener = tf;
     ROS_INFO("subscribing to laser topic...");
@@ -174,9 +176,26 @@ void ReactiveController::compute_robot_pose_in_plan(const std::string& laser_fra
 			distance = hypot(plan[index].pose.position.x, plan[index].pose.position.y);
 			if (distance < min_goal_distance)
 			{
-				//goal = plan[index].pose;
+				goal = plan[index];
+				visualization_msgs::MarkerArray vis_msg;
+				vis_msg.markers.push_back(visualization_msgs::Marker());
+				visualization_msgs::Marker& marker = vis_msg.markers.back();
+				marker.type = visualization_msgs::Marker::SPHERE;
+				marker.header.frame_id = goal.header.frame_id;
+			    marker.color.a = 1.0;
+			    marker.color.r = 1.0;
+				marker.color.g = 1.0;
+				marker.color.b = 0.0;
+				marker.action = visualization_msgs::Marker::ADD;
+				marker.ns = "temporary goal";
+				marker.scale.x = 0.05;
+				marker.scale.y = 0.05;
+				marker.scale.z = 0.05;
+				marker.pose = goal.pose;
+				marker.id = 0;
+			    visualization_publisher.publish(vis_msg);
+				break;
 			}
 
 		}
-
 }

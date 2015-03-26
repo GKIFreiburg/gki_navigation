@@ -32,6 +32,9 @@ private:
 	bool goal_reached;
 	std::string plan_frame_id;
 	double min_goal_distance;
+	geometry_msgs::PoseStamped goal;
+	double goal_angle;
+	double goal_distance;
 
 public:
 	ReactiveController();
