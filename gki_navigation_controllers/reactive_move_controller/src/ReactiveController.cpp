@@ -25,7 +25,7 @@ ReactiveController::~ReactiveController()
 
 void ReactiveController::laser_channel_callback(sensor_msgs::LaserScanConstPtr msg)
 {
-
+	ROS_INFO_STREAM("delay: "<<(msg->header.stamp-laser_scan.header.stamp).toSec());
 	laser_scan = *msg;
 }
 
