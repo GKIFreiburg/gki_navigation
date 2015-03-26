@@ -149,7 +149,7 @@ void ReactiveController::initialize(std::string name, tf::TransformListener* tf,
     ROS_INFO_STREAM("Channels: "<<laser_channels.size());
     listener = tf;
     ROS_INFO("subscribing to laser topic...");
-    laser_subscriber = nh.subscribe("base_scan", 1, &ReactiveController::laser_channel_callback, this);
+    laser_subscriber = nh.subscribe("base_scan", 5, &ReactiveController::laser_channel_callback, this);
     ROS_INFO("subscribing to laser topic...");
     visualization_publisher = nh.advertise<visualization_msgs::MarkerArray>("visualization", 1, false);
     ROS_INFO("reactive move controller initialized.");
