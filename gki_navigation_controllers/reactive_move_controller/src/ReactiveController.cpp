@@ -178,7 +178,9 @@ void ReactiveController::compute_robot_pose_in_plan(const std::string& laser_fra
 		for (int index = plan.size() - 1; index >= 0; index --)
 		{
 			double distance = 0;
-			distance = hypot(plan[index].pose.position.x, plan[index].pose.position.y);
+			geometry_msgs::Pose transformed_robot_from_plan;
+			tf::poseTFToMsg(robot_from_plan_tf, transformed_robot_from_plan);
+			distance = hypot(plan[index].pose.position.x - transformed_robot_from_plan.position.x, plan[index].pose.position.y - transformed_robot_from_plan.position.y);
 			if (distance < min_goal_distance)
 			{
 				goal = plan[index];
