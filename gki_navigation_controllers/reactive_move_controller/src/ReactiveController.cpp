@@ -44,18 +44,18 @@ void ReactiveController::compute_goal_angle(double& angle, double& distance, con
 		//geometry_msgs::Pose transformed_goal;
 		//tf::poseTFToMsg(robot_pose, transformed_goal);
 		//ROS_INFO_STREAM("transformed goal: "<<transformed_goal);
+		//geometry_msgs::Pose transformed_goal;
+		//tf::poseTFToMsg(goal_from_robot_tf, transformed_goal);
+		//ROS_INFO_STREAM("transformed goal: "<<transformed_goal);
+		tf::Vector3 point = goal_from_robot_tf.getOrigin();
+		angle = atan2(point.y(), point.x());
+		distance = hypot(point.x(), point.y());
 	}
 	catch (tf::TransformException& ex)
 	{
 		ROS_ERROR("%s", ex.what());
 		//ros::Duration(1.0).sleep();
 	}
-	//geometry_msgs::Pose transformed_goal;
-	//tf::poseTFToMsg(goal_from_robot_tf, transformed_goal);
-	//ROS_INFO_STREAM("transformed goal: "<<transformed_goal);
-	tf::Vector3 point = goal_from_robot_tf.getOrigin();
-	angle = atan2(point.y(), point.x());
-	distance = hypot(point.x(), point.y());
 
 }
 
@@ -63,18 +63,21 @@ bool ReactiveController::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
 {
 	compute_robot_pose_in_plan(laser_scan.header.frame_id);
 	visualization_msgs::MarkerArray vis_msg;
+	//HACK!!
+	bool goal_reached = true;
 	if (goal_reached == false)
-		compute_goal_angle(goal_angle, goal_distance, laser_scan.header.frame_id);
-	if (goal_distance < 0.25)
 	{
-		vis_msg.markers.push_back(visualization_msgs::Marker());
-		visualization_msgs::Marker& marker = vis_msg.markers.back();
-		marker.action = visualization_msgs::Marker::DELETE;
-		marker.ns = "temporary goal";
-		marker.id = 0;
-		marker.header.frame_id = "/odom";
-	    goal_reached = true;
-
+		compute_goal_angle(goal_angle, goal_distance, laser_scan.header.frame_id);
+		if (goal_distance < 0.25)
+		{
+			vis_msg.markers.push_back(visualization_msgs::Marker());
+			visualization_msgs::Marker& marker = vis_msg.markers.back();
+			marker.action = visualization_msgs::Marker::DELETE;
+			marker.ns = "temporary goal";
+			marker.id = 0;
+			marker.header.frame_id = plan_frame_id;
+			goal_reached = true;
+		}
 	}
 	// all channels update
 	for (size_t index = 0; index < laser_channels.size(); index++)
@@ -116,9 +119,11 @@ bool ReactiveController::isGoalReached()
 bool ReactiveController::setPlan(const std::vector<geometry_msgs::PoseStamped>& plan)
 {
 	this->plan = plan;
-	goal_reached = false;
 	if (! plan.empty())
+	{
 		plan_frame_id = plan[0].header.frame_id;
+		goal_reached = false;
+	}
 	return true;
 }
 
@@ -194,6 +199,7 @@ void ReactiveController::compute_robot_pose_in_plan(const std::string& laser_fra
 				marker.pose = goal.pose;
 				marker.id = 0;
 			    visualization_publisher.publish(vis_msg);
+			    ROS_INFO_STREAM("goal calculated");
 				break;
 			}
 
