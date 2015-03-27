@@ -7,6 +7,7 @@
 
 #include "reactive_move_controller/Channel.h"
 #include <tf/tf.h>
+#include <angles/angles.h>
 
 double degree_to_radians(double degree)
 {
@@ -23,7 +24,7 @@ Channel::Channel(double angle, double width) {
 	this->width = width;
 	this->angle = angle;
 	max_velocity = 1;
-	max_length = 3;
+	max_length = 2;
 	max_angular_velocity = 0.75;
 	robot_length = 0.35;
 	this->goal_distance = 0;
@@ -82,17 +83,23 @@ double Channel::compute_score(const double & goal_angle, bool goal_reached)
 	else
 	{
 		length_score = (length - robot_length) / (max_length - robot_length);
+		if (!goal_reached)
+		{
+			length_score = (fmin(goal_distance,length) - robot_length) / (max_length - robot_length);
+		}
 	}
 	double angle_score = 0.0;
 	if (fabs(angle) > M_PI/2.0)
 	{
-		angle_score = 0.5;
+		angle_score = 0.2;
 	}
 	else
 	{
-		angle_score = 1.0 - 0.5/90.0 *radians_to_degree(angle);
+		angle_score = 1.0 - 0.8/90.0 *radians_to_degree(angle);
 	}
 	double goal_score = 0.0;
+	goal_score = (1.0 - fabs(radians_to_degree(angles::shortest_angular_distance(goal_angle,angle))/180.0));
+/*
 	if(fabs(goal_angle-angle) > M_PI/2.0)
 	{
 		goal_score = 0.5;
@@ -101,15 +108,16 @@ double Channel::compute_score(const double & goal_angle, bool goal_reached)
 	{
 		goal_score = (1.0 - 0.5/90.0 *radians_to_degree(goal_angle-angle));
 	}
+*/
 	if (goal_reached == true )
 	{
 		goal_score = 1.0;
 	}
-	score = length_score * angle_score * goal_score;
+	score = length_score * goal_score * angle_score;
 	return score;
 }
 
-void Channel::get_velocity(geometry_msgs::Twist& velocity)
+void Channel::get_velocity(geometry_msgs::Twist& velocity, bool goal_reached)
 {
 	if(radians_to_degree(fabs(angle))>45)
 	{
@@ -119,8 +127,8 @@ void Channel::get_velocity(geometry_msgs::Twist& velocity)
 	{
 		double angle_limit = -max_velocity/45.0 * radians_to_degree(fabs(angle)) + max_velocity;
 		double length_limit = max_velocity / (max_length-0.2) * (length - 0.2);
-		if (goal_distance < length)
-			length_limit = max_velocity * length/max_length;
+		if (goal_distance < length && ! goal_reached)
+			length_limit = max_velocity * goal_distance/max_length;
 
 		velocity.linear.x = fmin(angle_limit, length_limit);
 

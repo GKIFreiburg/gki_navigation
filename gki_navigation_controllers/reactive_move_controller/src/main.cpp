@@ -35,7 +35,7 @@ void goal_callback(geometry_msgs::PoseStampedPtr msg)
 	    marker.color.a = 1.0;
 	    marker.color.r = 1.0;
 	    marker.color.g = 1.0;
-	    marker.color.b = 1.0;
+	    marker.color.b = 0.0;
 	    marker.action = visualization_msgs::Marker::ADD;
 	    marker.ns = "goal";
 	    marker.id = 0;
@@ -74,6 +74,7 @@ void compute_goal_angle(double& angle, double& distance, const std::string& lase
 	//ROS_INFO_STREAM("transformed goal: "<<transformed_goal);
 	tf::Vector3 point = goal_from_robot_tf.getOrigin();
 	angle = atan2(point.y(), point.x());
+	//ROS_INFO_STREAM(radians_to_degree(angle));
 	distance = hypot(point.x(), point.y());
 
 }
@@ -119,7 +120,7 @@ void laser_channel_callback(sensor_msgs::LaserScanConstPtr msg)
 	// set velocity
 	geometry_msgs::Twist velocity;
 
-	laser_channels[channel_index].get_velocity(velocity);
+	laser_channels[channel_index].get_velocity(velocity, goal_reached);
 	// visualize
 	for (size_t index = 0; index < laser_channels.size(); index++)
 	{

@@ -100,7 +100,7 @@ bool ReactiveController::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
 
 	//ROS_INFO_STREAM("Score: "<<score);
 	// set velocity
-	laser_channels[channel_index].get_velocity(cmd_vel);
+	laser_channels[channel_index].get_velocity(cmd_vel, goal_reached);
 	// visualize
 	for (size_t index = 0; index < laser_channels.size(); index++)
 	{

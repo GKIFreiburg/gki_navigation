@@ -22,7 +22,7 @@ public:
 
 	void laser_update(const sensor_msgs::LaserScan& laser_scan, double goal_distance, bool goal_reached);
 	double compute_score(const double & goal_angle, bool goal_reached);
-	void get_velocity(geometry_msgs::Twist& velocity);
+	void get_velocity(geometry_msgs::Twist& velocity, bool goal_reached);
 	void visualize(visualization_msgs::MarkerArray& vis_msg, const std::string& frame_id, int marker_id, const double & goal_angle, bool goal_reached);
 	void to_string();
 private:
