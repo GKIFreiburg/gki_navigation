@@ -6,7 +6,6 @@
 #include <sensor_msgs/LaserScan.h>
 #include <visualization_msgs/MarkerArray.h>
 #include "dynamicvoronoi/dynamicvoronoi.h"
-#include "channel_controller/applycalibration.h"
 
 namespace channel_controller
 {
@@ -51,7 +50,8 @@ namespace channel_controller
                     ScopedVelocityStatus(geometry_msgs::Twist & cmdVel,
                             ros::Publisher & pubStatus,
                             ros::Publisher & pubSound, ros::Publisher & pubLED,
-                            const costmap_2d::Costmap2DROS* costmap);
+                            const costmap_2d::Costmap2DROS* costmap,
+                            std::string map_frame_id);
                     ~ScopedVelocityStatus();
 
                     // goal approach
@@ -80,6 +80,7 @@ namespace channel_controller
                     ros::Publisher & pub_sound;
                     ros::Publisher & pub_led;
                     const costmap_2d::Costmap2DROS* costmap;
+                    std::string map_frame_id;
 
                     enum ChannelControllerState state;
                     enum SafeWaypointState safe_waypoint_state;
@@ -166,9 +167,8 @@ namespace channel_controller
         protected:
             tf::TransformListener* tf_;
             costmap_2d::Costmap2DROS* costmap_ros_;
-            costmap_2d::Costmap2D costmap_;
+            costmap_2d::Costmap2D* costmap_;
             DynamicVoronoi voronoi_;
-            ApplyCalibration calibration_;
 
             /// Current waypoint that we are approaching in the global plan.
             unsigned int current_waypoint_;

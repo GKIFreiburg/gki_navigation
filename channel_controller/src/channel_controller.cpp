@@ -36,8 +36,8 @@ void ChannelController::initialize(std::string name,
 
     waiting_for_obstacles_start_time_ = ros::Time(0);
 
-    voronoi_.initializeEmpty(costmap_ros_->getSizeInCellsX(),
-            costmap_ros_->getSizeInCellsY(), true);
+    voronoi_.initializeEmpty(costmap_ros_->getCostmap()->getSizeInCellsX(),
+            costmap_ros_->getCostmap()->getSizeInCellsY(), true);
 
     // Name is probably something like channel_controller::ChannelController
     // And our param then should be ChannelController
@@ -116,8 +116,6 @@ void ChannelController::initialize(std::string name,
     ROS_INFO("vis_max_dist: %f", vis_max_dist_);
     ROS_INFO("visualize_voronoi: %d", visualize_voronoi_);
 
-    calibration_.init();
-
     pub_markers_ = nhPriv.advertise<visualization_msgs::MarkerArray>("channel_markers", 1);
     pub_status_marker_ = nhPriv.advertise<visualization_msgs::Marker>("drive_channel_status", 1);
     pub_local_plan_ = nhPriv.advertise<nav_msgs::Path>("local_plan", 1);
@@ -138,15 +136,15 @@ void ChannelController::initialize(std::string name,
 bool ChannelController::updateVoronoi()
 {
     bool voronoi_ok = true;
-    costmap_ros_->getCostmapCopy(costmap_);     // srsly we have to copy that to get to the data??????
-    ROS_ASSERT(costmap_.getSizeInCellsX() == voronoi_.getSizeX());
-    ROS_ASSERT(costmap_.getSizeInCellsY() == voronoi_.getSizeY());
+    costmap_ = costmap_ros_->getCostmap();
+    ROS_ASSERT(costmap_->getSizeInCellsX() == voronoi_.getSizeX());
+    ROS_ASSERT(costmap_->getSizeInCellsY() == voronoi_.getSizeY());
 
     std::vector<IntPoint> obstacles;
     if(use_costmap_) {
-        for(unsigned int x = 0; x < costmap_.getSizeInCellsX(); x++) {
-            for(unsigned int y = 0; y < costmap_.getSizeInCellsY(); y++) {
-                if(costmap_.getCost(x, y) >= costmap_2d::LETHAL_OBSTACLE) { // lethal and unknown
+        for(unsigned int x = 0; x < costmap_->getSizeInCellsX(); x++) {
+            for(unsigned int y = 0; y < costmap_->getSizeInCellsY(); y++) {
+                if(costmap_->getCost(x, y) >= costmap_2d::LETHAL_OBSTACLE) { // lethal and unknown
                     obstacles.push_back(IntPoint(x, y));
                 }
             }
@@ -185,7 +183,7 @@ bool ChannelController::updateVoronoi()
             tf::Vector3 pt(last_laser_.ranges[i] * cos(da), last_laser_.ranges[i] * sin(da), 0.0);
             tf::Vector3 ptCostmap = transform * pt;
             unsigned int ix, iy;
-            if(costmap_.worldToMap(ptCostmap.x(), ptCostmap.y(), ix, iy)) {
+            if(costmap_->worldToMap(ptCostmap.x(), ptCostmap.y(), ix, iy)) {
                 obstacles.push_back(IntPoint(ix, iy));
             }
         }
@@ -232,8 +230,8 @@ bool ChannelController::updateVoronoi()
 
 void ChannelController::visualizeVoronoi()
 {
-    ROS_ASSERT(costmap_.getSizeInCellsX() == voronoi_.getSizeX());
-    ROS_ASSERT(costmap_.getSizeInCellsY() == voronoi_.getSizeY());
+    ROS_ASSERT(costmap_->getSizeInCellsX() == voronoi_.getSizeX());
+    ROS_ASSERT(costmap_->getSizeInCellsY() == voronoi_.getSizeY());
 
     // nothing to send to no one
     if(pub_markers_.getNumSubscribers() == 0)
@@ -248,19 +246,19 @@ void ChannelController::visualizeVoronoi()
     voronoiMarker.type = visualization_msgs::Marker::SPHERE_LIST;
     voronoiMarker.action = visualization_msgs::Marker::ADD;
     voronoiMarker.pose.orientation.w = 1.0;
-    voronoiMarker.scale.x = costmap_.getResolution() * sqrt(2.0);
-    voronoiMarker.scale.y = costmap_.getResolution() * sqrt(2.0);
-    voronoiMarker.scale.z = costmap_.getResolution() * sqrt(2.0);
+    voronoiMarker.scale.x = costmap_->getResolution() * sqrt(2.0);
+    voronoiMarker.scale.y = costmap_->getResolution() * sqrt(2.0);
+    voronoiMarker.scale.z = costmap_->getResolution() * sqrt(2.0);
     voronoiMarker.frame_locked = false;
     geometry_msgs::Point cellPoint;
-    cellPoint.z = - costmap_.getResolution() * sqrt(2.0)/2.0;
+    cellPoint.z = - costmap_->getResolution() * sqrt(2.0)/2.0;
     std_msgs::ColorRGBA cellColor;
     cellColor.a = 1.0;
-    for(unsigned int x = 0; x < costmap_.getSizeInCellsX(); x++) {
-        for(unsigned int y = 0; y < costmap_.getSizeInCellsY(); y++) {
+    for(unsigned int x = 0; x < costmap_->getSizeInCellsX(); x++) {
+        for(unsigned int y = 0; y < costmap_->getSizeInCellsY(); y++) {
             float dist = voronoi_.getDistance(x, y);
-            dist *= costmap_.getResolution();   // now in meters
-            costmap_.mapToWorld(x, y, cellPoint.x, cellPoint.y);
+            dist *= costmap_->getResolution();   // now in meters
+            costmap_->mapToWorld(x, y, cellPoint.x, cellPoint.y);
             voronoiMarker.points.push_back(cellPoint);
 
             if(dist == -INFINITY) {
@@ -439,8 +437,8 @@ bool ChannelController::localizeGlobalPlan(unsigned int start_index)
 
 DriveChannel ChannelController::computeChannel(tf::Pose from_pose, tf::Pose to_pose, double clearance_dist) const
 {
-    ROS_ASSERT(costmap_.getSizeInCellsX() == voronoi_.getSizeX());
-    ROS_ASSERT(costmap_.getSizeInCellsY() == voronoi_.getSizeY());
+    ROS_ASSERT(costmap_->getSizeInCellsX() == voronoi_.getSizeX());
+    ROS_ASSERT(costmap_->getSizeInCellsY() == voronoi_.getSizeY());
 
     DriveChannel channel;
     channel.from_pose_ = from_pose;
@@ -448,9 +446,9 @@ DriveChannel ChannelController::computeChannel(tf::Pose from_pose, tf::Pose to_p
 
     int start_x, start_y;
     int target_x, target_y;
-    costmap_.worldToMapNoBounds(from_pose.getOrigin().x(), from_pose.getOrigin().y(),
+    costmap_->worldToMapNoBounds(from_pose.getOrigin().x(), from_pose.getOrigin().y(),
             start_x, start_y);
-    costmap_.worldToMapNoBounds(to_pose.getOrigin().x(), to_pose.getOrigin().y(),
+    costmap_->worldToMapNoBounds(to_pose.getOrigin().x(), to_pose.getOrigin().y(),
             target_x, target_y);
     int trace_x = start_x;
     int trace_y = start_y;
@@ -460,7 +458,7 @@ DriveChannel ChannelController::computeChannel(tf::Pose from_pose, tf::Pose to_p
         if(b.cur_x() >= (int)voronoi_.getSizeX() || b.cur_y() >= (int)voronoi_.getSizeY())
             break;
         float dist = voronoi_.getDistance(b.cur_x(), b.cur_y());
-        dist *= costmap_.getResolution();
+        dist *= costmap_->getResolution();
         if(dist == -INFINITY)   // +INFINITY Ok
             break;
         if(dist < clearance_dist)
@@ -470,8 +468,8 @@ DriveChannel ChannelController::computeChannel(tf::Pose from_pose, tf::Pose to_p
         trace_x = b.cur_x();
         trace_y = b.cur_y();
     }
-    double dx = costmap_.getResolution() * (trace_x - start_x);
-    double dy = costmap_.getResolution() * (trace_y - start_y);
+    double dx = costmap_->getResolution() * (trace_x - start_x);
+    double dy = costmap_->getResolution() * (trace_y - start_y);
 
     tf::Pose deltaPose = from_pose.inverseTimes(to_pose);
     tf::Pose deltaChannelLength(deltaPose.getRotation(),
@@ -502,8 +500,8 @@ visualization_msgs::Marker ChannelController::createChannelMarkers(
         // rotation of 90 for half of width and the end to show width
         double dir = channel.direction();
         double min_dist = channel.min_dist_;
-        if(min_dist > 2.0 * std::max(costmap_.getSizeInMetersX(), costmap_.getSizeInMetersY())) {
-            min_dist = 2.0 * std::max(costmap_.getSizeInMetersX(), costmap_.getSizeInMetersY());
+        if(min_dist > 2.0 * std::max(costmap_->getSizeInMetersX(), costmap_->getSizeInMetersY())) {
+            min_dist = 2.0 * std::max(costmap_->getSizeInMetersX(), costmap_->getSizeInMetersY());
         }
         tf::Vector3 half_width(0.0, min_dist, 0.0);
         tf::Vector3 half_width_other(0.0, -min_dist, 0.0);
@@ -922,7 +920,7 @@ double ChannelController::getDistanceAtPose(const tf::Pose & pose, bool* in_boun
 {
     // determine current dist
     int pose_x, pose_y;
-    costmap_.worldToMapNoBounds(pose.getOrigin().x(), pose.getOrigin().y(),
+    costmap_->worldToMapNoBounds(pose.getOrigin().x(), pose.getOrigin().y(),
             pose_x, pose_y);
     if(pose_x < 0 || pose_y < 0 ||
             pose_x >= (int)voronoi_.getSizeX() || pose_y >= (int)voronoi_.getSizeY()) {
@@ -939,7 +937,7 @@ double ChannelController::getDistanceAtPose(const tf::Pose & pose, bool* in_boun
         *in_bounds = true;
     }
     float dist = voronoi_.getDistance(pose_x, pose_y);
-    dist *= costmap_.getResolution();
+    dist *= costmap_->getResolution();
     return dist;
 }
 
@@ -1119,7 +1117,7 @@ int ChannelController::evaluateSafeChannels(const std::vector<DriveChannel> & ch
 bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
 {
     cmd_vel = geometry_msgs::Twist();   // init to 0
-    ScopedVelocityStatus velStatus(cmd_vel, pub_status_marker_, pub_sound_, pub_led_, costmap_ros_);
+    ScopedVelocityStatus velStatus(cmd_vel, pub_status_marker_, pub_sound_, pub_led_, costmap_ros_, costmap_ros_->getGlobalFrameID());
 
     if(ros::Time::now() - last_odom_.header.stamp > ros::Duration(0.5)) {
         ROS_ERROR("Last odom is too old: %f - cannot produce commands.",
@@ -1187,14 +1185,12 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
 
     if(handleGoalTurn(cmd_vel, robot_pose, distToTarget, velStatus)) {
         // don't compute a channel, just turn to goal
-        cmd_vel = calibration_.lookup(cmd_vel);
         channelMarkers.markers.push_back(createChannelMarkers(std::vector<DriveChannel>(), 0.0, -1));
         pub_markers_.publish(channelMarkers);   // pub empty channels
         return true;
     }
 
     int getting_to_safe_wpt = getToSafeWaypoint(cmd_vel, robot_pose, relativeTarget, velStatus);
-    cmd_vel = calibration_.lookup(cmd_vel);
     if(getting_to_safe_wpt == 1) {
         return true;
     } else if(getting_to_safe_wpt == -1) {
@@ -1254,7 +1250,6 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
             2.0 * channels[best_idx].min_dist_);
 
     bool foundChannelCmd = computeVelocityForChannel(channels[best_idx], cmd_vel, velStatus);
-    cmd_vel = calibration_.lookup(cmd_vel);
     if(!foundChannelCmd) {
         ROS_ERROR("%s: Could not determine channel velocity", __func__);
     }
@@ -1268,8 +1263,8 @@ bool ChannelController::computeVelocityCommands(geometry_msgs::Twist & cmd_vel)
 
 ChannelController::ScopedVelocityStatus::ScopedVelocityStatus(geometry_msgs::Twist & cmdVel,
         ros::Publisher & pubMarkers, ros::Publisher & pubSound, ros::Publisher & pubLED,
-        const costmap_2d::Costmap2DROS* costmap) :
-    cmd_vel(cmdVel), pub_markers(pubMarkers), pub_sound(pubSound), pub_led(pubLED), costmap(costmap)
+        const costmap_2d::Costmap2DROS* costmap, std::string map_frame_id) :
+    cmd_vel(cmdVel), pub_markers(pubMarkers), pub_sound(pubSound), pub_led(pubLED), costmap(costmap), map_frame_id(map_frame_id)
 {
     status << std::setprecision(2) << std::fixed;
     state = CSNone;
@@ -1370,7 +1365,7 @@ void ChannelController::ScopedVelocityStatus::publishStatus()
 
     visualization_msgs::Marker statusMarker;
     statusMarker.header.stamp = ros::Time(0);
-    statusMarker.header.frame_id = costmap->getGlobalFrameID();
+    statusMarker.header.frame_id = map_frame_id;
     statusMarker.ns = "status";
     statusMarker.id = 0;
     statusMarker.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
