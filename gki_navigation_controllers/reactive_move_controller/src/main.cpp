@@ -41,7 +41,8 @@ void laser_callback(sensor_msgs::LaserScanConstPtr msg)
     	double x = cos(angle) * range;
     	double y = sin(angle) * range;
     	geometry_msgs::Point p;
-    	//p.
+    	p.x = x;
+    	p.y = y;
 		marker.points.push_back(p);
     }
     // useful funcitons:
