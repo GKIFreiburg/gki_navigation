@@ -20,6 +20,7 @@ void laser_callback(sensor_msgs::LaserScanConstPtr msg)
     msg->angle_increment; // angular resolution
     msg->ranges; // sensor data list
 
+
     vis_msg.markers.push_back(visualization_msgs::Marker());
     visualization_msgs::Marker& marker = vis_msg.markers.back();
     marker.type = visualization_msgs::Marker::POINTS;
@@ -37,13 +38,15 @@ void laser_callback(sensor_msgs::LaserScanConstPtr msg)
 
     for (int index = 0; index < msg->ranges.size(); index++) {
     	double range = msg->ranges[index];
-    	double angle = msg->angle_min + msg->angle_increment * index;
-    	double x = cos(angle) * range;
-    	double y = sin(angle) * range;
-    	geometry_msgs::Point p;
-    	p.x = x;
-    	p.y = y;
-		marker.points.push_back(p);
+    	if (range < msg->range_max && range > msg->range_min) {
+			double angle = msg->angle_min + msg->angle_increment * index;
+			double x = cos(angle) * range;
+			double y = sin(angle) * range;
+			geometry_msgs::Point p;
+			p.x = x;
+			p.y = y;
+			marker.points.push_back(p);
+    	}
     }
     // useful funcitons:
     // sin(0.5);
