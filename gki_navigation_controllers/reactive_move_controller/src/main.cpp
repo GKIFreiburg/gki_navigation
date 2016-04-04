@@ -36,6 +36,7 @@ void laser_callback(sensor_msgs::LaserScanConstPtr msg)
     marker.scale.y = 0.05;
     marker.scale.z = 0.05;
 
+    std::vector<geometry_msgs::Point> points;
     for (int index = 0; index < msg->ranges.size(); index++) {
     	double range = msg->ranges[index];
     	if (range < msg->range_max && range > msg->range_min) {
@@ -45,6 +46,7 @@ void laser_callback(sensor_msgs::LaserScanConstPtr msg)
 			geometry_msgs::Point p;
 			p.x = x;
 			p.y = y;
+			points.push_back(p);
 			marker.points.push_back(p);
     	}
     }
@@ -54,9 +56,25 @@ void laser_callback(sensor_msgs::LaserScanConstPtr msg)
     // hypot(a, b); hypotenuse in triangle abc, length of c
     // atan2(b, a); angle in triangle abc, angle alpha
     //ROS_INFO_STREAM("min angle: "<<msg->angle_min);
-    std::vector<geometry_msgs::Point> laser_points;
+
+    double half_robot_width = 0.35;
+    double length = 10;
+    for(int index = 0; index < points.size(); index++) {
+    	geometry_msgs::Point p = points[index];
+    	if (p.y < half_robot_width && p.y > -half_robot_width) {
+    		if (p.x < length) {
+    			length = p.x;
+    		}
+    	}
+    }
 
     geometry_msgs::Twist velocity;
+    if (length > 0.5){
+    	velocity.linear.x = 0.2;
+    }
+
+    //velocity.linear.x = // forward
+    //velocity.angular.z = // turn
     velocity_publisher.publish(velocity);
     visualization_publisher.publish(vis_msg);
 }
@@ -70,7 +88,7 @@ int main(int argc, char** argv)
 
 
     ROS_INFO("subscribing to laser topic...");
-    laser_subscriber = nh.subscribe("base_scan", 1, laser_callback);
+    laser_subscriber = nh.subscribe("base_scan_filtered", 1, laser_callback);
     ROS_INFO("advertizing command velocity topic...");
     velocity_publisher = nh.advertise<geometry_msgs::Twist>("command_velocity", 1, false);
     visualization_publisher = nh.advertise<visualization_msgs::MarkerArray>("visualization", 1, false);
