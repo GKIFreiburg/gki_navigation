@@ -17,7 +17,6 @@
   <depend package="visualization_msgs"/>
 
   <export>
-    <nav_core plugin="${prefix}/channel_controller_plugins.xml" />
   </export>
 
 </package>
