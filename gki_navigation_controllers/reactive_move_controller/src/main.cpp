@@ -69,7 +69,9 @@ void laser_callback(sensor_msgs::LaserScanConstPtr msg)
     }
 
     geometry_msgs::Twist velocity;
+	ROS_INFO_STREAM("length = "<<length);
     if (length > 0.5){
+    	ROS_INFO_STREAM("fahren ");
     	velocity.linear.x = 0.2;
     }
 
