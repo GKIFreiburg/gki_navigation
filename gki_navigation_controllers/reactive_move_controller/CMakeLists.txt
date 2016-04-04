@@ -1,30 +1,47 @@
-cmake_minimum_required(VERSION 2.4.6)
-include($ENV{ROS_ROOT}/core/rosbuild/rosbuild.cmake)
+cmake_minimum_required(VERSION 2.8.3)
+project(reactive_move_controller)
 
-# Set the build type.  Options are:
-#  Coverage       : w/ debug symbols, w/o optimization, w/ code-coverage
-#  Debug          : w/ debug symbols, w/o optimization
-#  Release        : w/o debug symbols, w/ optimization
-#  RelWithDebInfo : w/ debug symbols, w/ optimization
-#  MinSizeRel     : w/o debug symbols, w/ optimization, stripped binaries
-#set(ROS_BUILD_TYPE RelWithDebInfo)
+find_package(catkin REQUIRED COMPONENTS
+	roscpp 
+	nav_core
+	tf
+	angles
+	sensor_msgs
+	geometry_msgs
+	pluginlib
+	visualization_msgs
+)
 
-rosbuild_init()
+find_package(PkgConfig REQUIRED)
 
-#set the default path for built executables to the "bin" directory
-set(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/bin)
-#set the default path for built libraries to the "lib" directory
-set(LIBRARY_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/lib)
+#find_package(Boost REQUIRED COMPONENTS system)
 
-#uncomment if you have defined messages
-#rosbuild_genmsg()
-#uncomment if you have defined services
-#rosbuild_gensrv()
+catkin_package(
+    DEPENDS 
+    CATKIN_DEPENDS 
+	roscpp 
+	nav_core
+	tf
+	angles
+	sensor_msgs
+	geometry_msgs
+	pluginlib
+	visualization_msgs
+    LIBRARIES 
+    INCLUDE_DIRS include
+)
 
-#common commands for building c++ executables and libraries
-#rosbuild_add_library(reactive_controller src/Channel.cpp src/ReactiveController.cpp)
-#target_link_libraries(${PROJECT_NAME} another_library)
-#rosbuild_add_boost_directories()
-#rosbuild_link_boost(${PROJECT_NAME} thread)
-rosbuild_add_executable(${PROJECT_NAME} src/main.cpp)
-#target_link_libraries(example ${PROJECT_NAME})
+include_directories(include ${catkin_INCLUDE_DIRS} )
+
+#add_library()
+
+#add_dependencies(sick_rfu_620 ${PROJECT_NAME}_gencfg ${catkin_EXPORTED_TARGETS})
+
+
+add_executable(reactive_move_controller
+    src/main.cpp)
+
+target_link_libraries(reactive_move_controller
+    ${catkin_LIBRARIES}
+)
+#target_link_libraries()
