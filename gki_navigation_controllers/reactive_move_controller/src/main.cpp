@@ -6,10 +6,66 @@
 #include <visualization_msgs/MarkerArray.h>
 #include <vector>
 #include <math.h>
+#include <angles/angles.h>
 
 ros::Subscriber laser_subscriber;
 ros::Publisher visualization_publisher;
 ros::Publisher velocity_publisher;
+
+ros::Time last_forward_time;
+
+double half_robot_width = 0.25;
+
+struct Channel
+{
+	double angle;
+	double length;
+    std::vector<geometry_msgs::Point> points;
+
+	Channel(double angle)
+	{
+		this->angle = angle;
+		this->length = 10;
+	}
+
+	void compute_length(sensor_msgs::LaserScanConstPtr msg) {
+		points.clear();
+	    for (int index = 0; index < msg->ranges.size(); index++) {
+	    	double range = msg->ranges[index];
+	    	if (range < msg->range_max && range > msg->range_min) {
+				double angle = msg->angle_min + msg->angle_increment * index;
+				double x = cos(angle - this->angle) * range;
+				double y = sin(angle - this->angle) * range;
+				geometry_msgs::Point p;
+				p.x = x;
+				p.y = y;
+				points.push_back(p);
+	    	}
+	    }
+	    length = 10;
+	    for(int index = 0; index < points.size(); index++) {
+	    	geometry_msgs::Point p = points[index];
+	    	if (p.y < half_robot_width && p.y > -half_robot_width) {
+	    		if (p.x < length) {
+	    			length = p.x;
+	    		}
+	    	}
+	    }
+	}
+};
+
+std::vector<Channel> channels;
+
+double interpolate(double min, double max, double x, double min_value = 0, double max_value = 1)
+{
+	if (x < min){
+		return min_value;
+	}
+	if (x > max){
+		return max_value;
+	}
+	return ((x-min) / (max-min)) * (max_value - min_value) + min_value;
+}
 
 void laser_callback(sensor_msgs::LaserScanConstPtr msg)
 {
@@ -57,23 +113,39 @@ void laser_callback(sensor_msgs::LaserScanConstPtr msg)
     // atan2(b, a); angle in triangle abc, angle alpha
     //ROS_INFO_STREAM("min angle: "<<msg->angle_min);
 
-    double half_robot_width = 0.35;
     double length = 10;
+    double rotation_direction = 1;
     for(int index = 0; index < points.size(); index++) {
     	geometry_msgs::Point p = points[index];
     	if (p.y < half_robot_width && p.y > -half_robot_width) {
     		if (p.x < length) {
     			length = p.x;
+    			if (p.y > 0 ){
+    				rotation_direction = -1;
+    			}else {
+    				rotation_direction = 1;
+    			}
     		}
     	}
     }
 
     geometry_msgs::Twist velocity;
-	ROS_INFO_STREAM("length = "<<length);
     if (length > 0.5){
     	ROS_INFO_STREAM("fahren ");
-    	velocity.linear.x = 0.2;
+    	velocity.linear.x = interpolate(0.5,3,length, 0.08, 0.8);
+    } else {
+    	ROS_INFO_STREAM("drehen ");
+    	velocity.angular.z = angles::from_degrees(45) * rotation_direction;
     }
+	ROS_INFO_STREAM("velocity: "<<velocity.linear.x<<" "<<angles::to_degrees(velocity.angular.z));
+	if (velocity.linear.x > 0.08){
+		last_forward_time = msg->header.stamp;
+	}
+	if (msg->header.stamp - last_forward_time > ros::Duration(5.0)) {
+		// stuck
+    	ROS_INFO_STREAM("stuck");
+		velocity.angular.z = angles::from_degrees(45);
+	}
 
     //velocity.linear.x = // forward
     //velocity.angular.z = // turn
@@ -89,10 +161,21 @@ int main(int argc, char** argv)
     //ROS_INFO_STREAM(0/0);
 
 
+//    for (double x = 0; x < 3.5; x +=0.1){
+//    	double value = interpolate(0.5, 3, x, 1, 3);
+//    	ROS_INFO_STREAM(x<< " -> "<<value);
+//    }
+//    return 0;
+
+    ROS_INFO("creating channels...");
+     for (double x = 90; x > -91; x -= 5) {
+    	 channels.push_back(Channel(angles::from_degrees(x)));
+     }
+    ROS_INFO_STREAM(channels.size()<< " channels created.");
     ROS_INFO("subscribing to laser topic...");
     laser_subscriber = nh.subscribe("base_scan_filtered", 1, laser_callback);
     ROS_INFO("advertizing command velocity topic...");
-    velocity_publisher = nh.advertise<geometry_msgs::Twist>("command_velocity", 1, false);
+    velocity_publisher = nh.advertise<geometry_msgs::Twist>("/cmd_vel_mux/input/navi", 1, false);
     visualization_publisher = nh.advertise<visualization_msgs::MarkerArray>("visualization", 1, false);
     ROS_INFO("reactive move controller initialized.");
 
