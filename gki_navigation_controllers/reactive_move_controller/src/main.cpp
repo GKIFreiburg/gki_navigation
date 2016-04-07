@@ -168,16 +168,24 @@ struct Channel
 
 std::vector<Channel> channels;
 
-geometry_msgs::PoseStamped goal;
+std::vector<geometry_msgs::PoseStamped> goal_list;
+//geometry_msgs::PoseStamped goal;
 void goal_callback(geometry_msgs::PoseStampedConstPtr msg)
 {
 	ROS_INFO_STREAM("received new goal...");
-	goal = *msg;
-	has_goal = true;
+	goal_list.push_back(*msg);
+	if (goal_list.size() > 5) {
+		goal_list.erase(goal_list.begin());
+	}
+	has_goal = ! goal_list.empty();
 }
 
 geometry_msgs::PoseStamped transform_goal(sensor_msgs::LaserScanConstPtr msg)
 {
+	if (goal_list.empty()) {
+		return geometry_msgs::PoseStamped();
+	}
+	geometry_msgs::PoseStamped& goal = goal_list.front();
 	geometry_msgs::PoseStamped goal_in_robot_frame;
 	if (!goal.header.frame_id.empty())
 	{
@@ -213,7 +221,10 @@ void laser_channels_callback(sensor_msgs::LaserScanConstPtr msg)
 		angle_to_goal = atan2(goal.pose.position.y, goal.pose.position.x);
 		distance_to_goal = hypot(goal.pose.position.y, goal.pose.position.x);
 		if (distance_to_goal < 0.2) {
-			has_goal = false;
+			// goal reached
+			goal_list.erase(goal_list.begin());
+			has_goal = ! goal_list.empty();
+
 			kobuki_msgs::Sound sound_msg;
 			sound_msg.value = sound_msg.CLEANINGEND;
 			sound_publisher.publish(sound_msg);
@@ -250,6 +261,7 @@ void laser_channels_callback(sensor_msgs::LaserScanConstPtr msg)
 	m.color.g = 0.2;
 	m.color.b = 1;
 	m.scale.x = 0.05;
+	m.ns = "best channel";
 	vis_msg.markers.push_back(m);
 
 	geometry_msgs::Twist velocity;
@@ -281,21 +293,26 @@ void laser_channels_callback(sensor_msgs::LaserScanConstPtr msg)
 	//ROS_INFO_STREAM("goal: "<<goal.pose.position);
 	if (has_goal)
 	{
-		visualization_msgs::Marker marker;
-		marker.type = visualization_msgs::Marker::CUBE;
-		marker.header.frame_id = goal.header.frame_id;
-		marker.color.a = 1.0;
-		marker.color.r = 1;
-		marker.color.g = 0.2;
-		marker.color.b = 0.2;
-		marker.action = visualization_msgs::Marker::ADD;
-		marker.ns = "goal";
-		marker.pose.orientation.w = 1;
-		marker.scale.x = 0.05;
-		marker.scale.y = 0.05;
-		marker.scale.z = 0.05;
-		marker.pose = goal.pose;
-		vis_msg.markers.push_back(marker);
+		for (int index = 0; index < goal_list.size(); index++)
+		{
+			geometry_msgs::PoseStamped& goal = goal_list[index];
+			visualization_msgs::Marker marker;
+			marker.type = visualization_msgs::Marker::SPHERE;
+			marker.header.frame_id = goal.header.frame_id;
+			marker.color.a = 1.0;
+			marker.color.r = interpolate(0, 5, index, 1, 0);
+			marker.color.g = interpolate(0, 5, index, 0.66, 0);
+			marker.color.b = 0;
+			marker.action = visualization_msgs::Marker::ADD;
+			marker.ns = "goal";
+			marker.id = index;
+			marker.pose.orientation.w = 1;
+			marker.scale.x = 0.1;
+			marker.scale.y = 0.1;
+			marker.scale.z = 0.1;
+			marker.pose = goal.pose;
+			vis_msg.markers.push_back(marker);
+		}
 	}
 	else
 	{
@@ -313,106 +330,106 @@ void laser_channels_callback(sensor_msgs::LaserScanConstPtr msg)
 	visualization_publisher.publish(vis_msg);
 }
 
-void laser_callback(sensor_msgs::LaserScanConstPtr msg)
-{
-	visualization_msgs::MarkerArray vis_msg;
-	// TODO: create behavior
-	msg->angle_min; // starting angle
-	msg->angle_max; // ending angle
-	msg->angle_increment; // angular resolution
-	msg->ranges; // sensor data list
-
-	vis_msg.markers.push_back(visualization_msgs::Marker());
-	visualization_msgs::Marker& marker = vis_msg.markers.back();
-	marker.type = visualization_msgs::Marker::POINTS;
-	marker.header.frame_id = msg->header.frame_id;
-	marker.color.a = 1.0;
-	marker.color.r = 0.2;
-	marker.color.g = 1.0;
-	marker.color.b = 0.2;
-	marker.action = visualization_msgs::Marker::ADD;
-	marker.ns = "xy laser";
-	marker.pose.orientation.w = 1;
-	marker.scale.x = 0.05;
-	marker.scale.y = 0.05;
-	marker.scale.z = 0.05;
-
-	std::vector<geometry_msgs::Point> points;
-	for (int index = 0; index < msg->ranges.size(); index++)
-	{
-		double range = msg->ranges[index];
-		if (range < msg->range_max && range > msg->range_min)
-		{
-			double angle = msg->angle_min + msg->angle_increment * index;
-			double x = cos(angle) * range;
-			double y = sin(angle) * range;
-			geometry_msgs::Point p;
-			p.x = x;
-			p.y = y;
-			points.push_back(p);
-			marker.points.push_back(p);
-		}
-	}
-	// useful funcitons:
-	// sin(0.5);
-	// cos(0.5);
-	// hypot(a, b); hypotenuse in triangle abc, length of c
-	// atan2(b, a); angle in triangle abc, angle alpha
-	//ROS_INFO_STREAM("min angle: "<<msg->angle_min);
-
-	double length = 10;
-	double rotation_direction = 1;
-	for (int index = 0; index < points.size(); index++)
-	{
-		geometry_msgs::Point p = points[index];
-		if (p.y < half_robot_width && p.y > -half_robot_width)
-		{
-			if (p.x < length)
-			{
-				length = p.x;
-				if (p.y > 0)
-				{
-					rotation_direction = -1;
-				}
-				else
-				{
-					rotation_direction = 1;
-				}
-			}
-		}
-	}
-
-	geometry_msgs::Twist velocity;
-	if (length > 0.5)
-	{
-		ROS_INFO_STREAM("fahren ");
-		velocity.linear.x = interpolate(0.5, 3, length, 0.08, 0.8);
-	}
-	else
-	{
-		ROS_INFO_STREAM("drehen ");
-		velocity.angular.z = angles::from_degrees(45) * rotation_direction;
-	}
-	ROS_INFO_STREAM("velocity: "<<velocity.linear.x<<" "<<angles::to_degrees(velocity.angular.z));
-	if (velocity.linear.x > 0.08)
-	{
-		last_forward_time = msg->header.stamp;
-	}
-	if (msg->header.stamp - last_forward_time > ros::Duration(5.0))
-	{
-		// stuck
-		ROS_INFO_STREAM("stuck");
-		kobuki_msgs::Sound sound_msg;
-		sound_msg.value = sound_msg.BUTTON;
-		sound_publisher.publish(sound_msg);
-		velocity.angular.z = angles::from_degrees(45);
-	}
-
-	//velocity.linear.x = // forward
-	//velocity.angular.z = // turn
-	velocity_publisher.publish(velocity);
-	visualization_publisher.publish(vis_msg);
-}
+//void laser_callback(sensor_msgs::LaserScanConstPtr msg)
+//{
+//	visualization_msgs::MarkerArray vis_msg;
+//	// create behavior
+//	msg->angle_min; // starting angle
+//	msg->angle_max; // ending angle
+//	msg->angle_increment; // angular resolution
+//	msg->ranges; // sensor data list
+//
+//	vis_msg.markers.push_back(visualization_msgs::Marker());
+//	visualization_msgs::Marker& marker = vis_msg.markers.back();
+//	marker.type = visualization_msgs::Marker::POINTS;
+//	marker.header.frame_id = msg->header.frame_id;
+//	marker.color.a = 1.0;
+//	marker.color.r = 0.2;
+//	marker.color.g = 1.0;
+//	marker.color.b = 0.2;
+//	marker.action = visualization_msgs::Marker::ADD;
+//	marker.ns = "xy laser";
+//	marker.pose.orientation.w = 1;
+//	marker.scale.x = 0.05;
+//	marker.scale.y = 0.05;
+//	marker.scale.z = 0.05;
+//
+//	std::vector<geometry_msgs::Point> points;
+//	for (int index = 0; index < msg->ranges.size(); index++)
+//	{
+//		double range = msg->ranges[index];
+//		if (range < msg->range_max && range > msg->range_min)
+//		{
+//			double angle = msg->angle_min + msg->angle_increment * index;
+//			double x = cos(angle) * range;
+//			double y = sin(angle) * range;
+//			geometry_msgs::Point p;
+//			p.x = x;
+//			p.y = y;
+//			points.push_back(p);
+//			marker.points.push_back(p);
+//		}
+//	}
+//	// useful funcitons:
+//	// sin(0.5);
+//	// cos(0.5);
+//	// hypot(a, b); hypotenuse in triangle abc, length of c
+//	// atan2(b, a); angle in triangle abc, angle alpha
+//	//ROS_INFO_STREAM("min angle: "<<msg->angle_min);
+//
+//	double length = 10;
+//	double rotation_direction = 1;
+//	for (int index = 0; index < points.size(); index++)
+//	{
+//		geometry_msgs::Point p = points[index];
+//		if (p.y < half_robot_width && p.y > -half_robot_width)
+//		{
+//			if (p.x < length)
+//			{
+//				length = p.x;
+//				if (p.y > 0)
+//				{
+//					rotation_direction = -1;
+//				}
+//				else
+//				{
+//					rotation_direction = 1;
+//				}
+//			}
+//		}
+//	}
+//
+//	geometry_msgs::Twist velocity;
+//	if (length > 0.5)
+//	{
+//		ROS_INFO_STREAM("fahren ");
+//		velocity.linear.x = interpolate(0.5, 3, length, 0.08, 0.8);
+//	}
+//	else
+//	{
+//		ROS_INFO_STREAM("drehen ");
+//		velocity.angular.z = angles::from_degrees(45) * rotation_direction;
+//	}
+//	ROS_INFO_STREAM("velocity: "<<velocity.linear.x<<" "<<angles::to_degrees(velocity.angular.z));
+//	if (velocity.linear.x > 0.08)
+//	{
+//		last_forward_time = msg->header.stamp;
+//	}
+//	if (msg->header.stamp - last_forward_time > ros::Duration(5.0))
+//	{
+//		// stuck
+//		ROS_INFO_STREAM("stuck");
+//		kobuki_msgs::Sound sound_msg;
+//		sound_msg.value = sound_msg.BUTTON;
+//		sound_publisher.publish(sound_msg);
+//		velocity.angular.z = angles::from_degrees(45);
+//	}
+//
+//	//velocity.linear.x = // forward
+//	//velocity.angular.z = // turn
+//	velocity_publisher.publish(velocity);
+//	visualization_publisher.publish(vis_msg);
+//}
 
 int main(int argc, char** argv)
 {
