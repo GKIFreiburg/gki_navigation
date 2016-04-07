@@ -31,7 +31,7 @@ catkin_package(
     INCLUDE_DIRS include
 )
 
-include_directories(include ${catkin_INCLUDE_DIRS} )
+include_directories(${catkin_INCLUDE_DIRS} )
 
 #add_library()
 
