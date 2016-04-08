@@ -28,10 +28,10 @@ catkin_package(
 	pluginlib
 	visualization_msgs
     LIBRARIES 
-    INCLUDE_DIRS include
+    INCLUDE_DIRS 
 )
 
-include_directories(include ${catkin_INCLUDE_DIRS} )
+include_directories(${catkin_INCLUDE_DIRS} )
 
 #add_library()
 
