@@ -191,8 +191,9 @@ geometry_msgs::PoseStamped transform_goal(sensor_msgs::LaserScanConstPtr msg)
 	{
 		try
 		{
-			goal.header.stamp = msg->header.stamp;
-			tfl->waitForTransform(msg->header.frame_id, goal.header.frame_id, msg->header.stamp, ros::Duration(1.0));
+//			goal.header.stamp = msg->header.stamp;
+			goal.header.stamp = ros::Time(0);
+			tfl->waitForTransform(msg->header.frame_id, goal.header.frame_id, goal.header.stamp, ros::Duration(1.0));
 			tfl->transformPose(msg->header.frame_id, goal, goal_in_robot_frame);
 			//ROS_INFO_STREAM("goal: "<<goal_in_robot_frame);
 		} catch (tf::LookupException& e)
