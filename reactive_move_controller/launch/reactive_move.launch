@@ -1,0 +1,10 @@
+<!-- launch file for reactive controller -->
+<launch>
+    <!--  smooths inputs from cmd_vel_mux/input/teleop_raw to cmd_vel_mux/input/teleop -->
+    <include file="$(find turtlebot_navigation)/launch/includes/_velocity_smoother.launch"/>
+    
+    <node pkg="reactive_move_controller" type="reactive_move_controller" name="reactive_move_controller" output="screen">
+        <remap from="base_scan" to="base_scan_filtered"/>
+        <remap from="command_velocity" to="cmd_vel_mux/input/navi_raw"/>
+    </node>
+</launch>
