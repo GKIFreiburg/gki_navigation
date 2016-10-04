@@ -11,9 +11,6 @@
 #include <message_filters/subscriber.h>
 #include <angles/angles.h>
 
-std::string base_frame;
-std::string odom_frame;
-
 ros::Publisher odom_publisher;
 nav_msgs::Odometry odom;
 geometry_msgs::Pose2D pose;
@@ -83,23 +80,39 @@ void updateParams()
     paramCached(n, "odom_frame", odom.header.frame_id, std::string("odom"));
 }
 
-void velocity_callback(const geometry_msgs::TwistStampedConstPtr msg)
+void velocity_callback(const geometry_msgs::PointStampedConstPtr msg)
 {
 	updateParams();
-    sensor_msgs::ImuConstPtr previous_imu = imu_cache->getElemBeforeTime(odom.header.stamp);
-    sensor_msgs::ImuConstPtr current_imu = imu_cache->getElemBeforeTime(msg->header.stamp);
+	
+	geometry_msgs::TwistStamped twist;
+	twist.header.stamp = msg->header.stamp;
+	if (twist.header.stamp == odom.header.stamp)
+	{
+		ROS_WARN_STREAM("timestamp error: t1="<<twist.header.stamp.toSec()<<" t2="<<odom.header.stamp.toSec());
+		return;
+	}
+	twist.header.frame_id = odom.child_frame_id;
+	twist.twist.linear.x = msg->point.x;
+	twist.twist.angular.z = msg->point.z;
+	sensor_msgs::ImuConstPtr previous_imu = imu_cache->getElemBeforeTime(odom.header.stamp);
+	sensor_msgs::ImuConstPtr current_imu = imu_cache->getElemBeforeTime(twist.header.stamp);
 
-    // without imu
-	geometry_msgs::Twist velocity = msg->twist;
-    if (current_imu && previous_imu)
-    {
-    	// use imu, if we have data
-    	double previous_theta = tf2::getYaw(previous_imu->orientation);
-    	double current_theta = tf2::getYaw(current_imu->orientation);
-    	double delta_yaw = current_theta - previous_theta;
-    	velocity.angular.z = delta_yaw / (current_imu->header.stamp - previous_imu->header.stamp).toSec();
-    }
-	double dt = (odom.header.stamp - msg->header.stamp).toSec();
+	// without imu
+	geometry_msgs::Twist velocity = twist.twist;
+	if (current_imu && previous_imu)
+	{
+		if (current_imu->header.stamp == previous_imu->header.stamp)
+		{
+			ROS_WARN_STREAM("timestamp error: t1="<<twist.header.stamp.toSec()<<" t2="<<odom.header.stamp.toSec());
+			return;
+		}
+		// use imu, if we have data
+		double previous_theta = tf2::getYaw(previous_imu->orientation);
+		double current_theta = tf2::getYaw(current_imu->orientation);
+		double delta_yaw = current_theta - previous_theta;
+		velocity.angular.z = delta_yaw / (current_imu->header.stamp - previous_imu->header.stamp).toSec();
+	}
+	double dt = (twist.header.stamp - odom.header.stamp).toSec();
 	double delta_x = (velocity.linear.x * cos(pose.theta) - velocity.linear.y * sin(pose.theta)) * dt;
 	double delta_y = (velocity.linear.x * sin(pose.theta) + velocity.linear.y * cos(pose.theta)) * dt;
 	double delta_yaw = velocity.angular.z * dt;
@@ -108,9 +121,7 @@ void velocity_callback(const geometry_msgs::TwistStampedConstPtr msg)
 	pose.y += delta_y;
 	pose.theta += delta_yaw;
 
-
-	odom.header.stamp = msg->header.stamp;
-	odom.header.frame_id = odom_frame;
+	odom.header.stamp = twist.header.stamp;
 
 	// set the position
 	odom.pose.pose.position.x = pose.x;
@@ -121,7 +132,7 @@ void velocity_callback(const geometry_msgs::TwistStampedConstPtr msg)
 	tf2::convert(quaternion, odom.pose.pose.orientation);
 	// copy the velocity
 	odom.twist.twist = velocity;
-    odom_publisher.publish(odom);
+	odom_publisher.publish(odom);
 }
 
 int main(int argc, char** argv)
