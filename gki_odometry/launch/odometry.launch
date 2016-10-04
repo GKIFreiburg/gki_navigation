@@ -4,9 +4,9 @@
 		<param name="odom_frame" value="odom"/>
 		<param name="x_stddev" value="0.002"/>
 		<param name="y_stddev" value="0.002"/>
-		<param name="rotation_stddev" value="0.017"/>
-		<param name="cov_xy" value="0.0"/>
-		<param name="cov_xrotation" value="0.0"/>
-		<param name="cov_yrotation" value="0.0"/>
+		<param name="theta_stddev" value="0.017"/>
+		<param name="xy_cov" value="0.0"/>
+		<param name="xtheta_cov" value="0.0"/>
+		<param name="ytheta_cov" value="0.0"/>
 	</node>
 </launch>

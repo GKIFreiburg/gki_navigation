@@ -32,25 +32,51 @@ void paramCached(const ros::NodeHandle& nh, const std::string& param_name, T& pa
 void updateParams()
 {
     ros::NodeHandle n("~");
-    // covariance matrix
+    // covariance matrix pose
 	//	xx	xy	0	0	0	xth
 	//	xy	yy	0	0	0	yth
 	//	0	0	999	0	0	0
 	//	0	0	0	999	0	0
 	//	0	0	0	0	999	0
 	//	xth	yth	0	0	0	thth
-    paramCached(n, "x_stddev", odom.pose.covariance[0+0*6], 0.002);
-    paramCached(n, "y_stddev", odom.pose.covariance[1+1*6], 0.002);
-    paramCached(n, "rotation_stddev", odom.pose.covariance[5+5*6], 0.017);
-    paramCached(n, "cov_xy", odom.pose.covariance[1+0*6], 0.0);
+    double high_covariance = std::numeric_limits<double>::max();
+    double x_stddev;
+    double y_stddev;
+    double xy_cov;
+    double theta_stddev;
+    double xtheta_cov;
+    double ytheta_cov;
+    paramCached(n, "x_stddev", x_stddev, 0.002);
+    paramCached(n, "y_stddev", y_stddev, 0.002);
+    paramCached(n, "theta_stddev", theta_stddev, 0.017);
+    paramCached(n, "xy_cov", xy_cov, 0.0);
+    paramCached(n, "xtheta_cov", xtheta_cov, 0.0);
+    paramCached(n, "ytheta_cov", ytheta_cov, 0.0);
+    odom.pose.covariance[0+0*6] = pow(x_stddev, 2);
+    odom.pose.covariance[1+1*6] = pow(y_stddev, 2);
+    odom.pose.covariance[1+0*6] = pow(xy_cov, 2);
     odom.pose.covariance[0+1*6] = odom.pose.covariance[1+0*6];
-    paramCached(n, "cov_xrotation", odom.pose.covariance[5+0*6], 0.0);
+    odom.pose.covariance[5+0*6] = pow(xtheta_cov, 2);
     odom.pose.covariance[0+5*6] = odom.pose.covariance[5+0*6];
-    paramCached(n, "cov_yrotation", odom.pose.covariance[5+1*6], 0.0);
+    odom.pose.covariance[5+1*6] = pow(ytheta_cov, 2);
     odom.pose.covariance[1+5*6] = odom.pose.covariance[5+1*6];
-    odom.pose.covariance[2+2*6] = 999;
-    odom.pose.covariance[2+2*6] = 999;
-    odom.pose.covariance[2+2*6] = 999;
+    odom.pose.covariance[2+2*6] = high_covariance;
+    odom.pose.covariance[2+2*6] = high_covariance;
+    odom.pose.covariance[2+2*6] = high_covariance;
+    odom.pose.covariance[5+5*6] = pow(theta_stddev, 2);
+    // covariance matrix velocity
+    //	xx	0	0	0	0	0
+    //	0	999	0	0	0	0
+    //	0	0	999	0	0	0
+    //	0	0	0	999	0	0
+    //	0	0	0	0	999	0
+    //	0	0	0	0	0	thth
+    odom.twist.covariance[0+0*6] = pow(x_stddev, 2);
+    odom.twist.covariance[1+1*6] = high_covariance;
+    odom.twist.covariance[2+2*6] = high_covariance;
+    odom.twist.covariance[3+3*6] = high_covariance;
+    odom.twist.covariance[4+4*6] = high_covariance;
+    odom.twist.covariance[5+5*6] = pow(theta_stddev, 2);
 
     paramCached(n, "base_frame", odom.child_frame_id, std::string("base_link"));
     paramCached(n, "odom_frame", odom.header.frame_id, std::string("odom"));
