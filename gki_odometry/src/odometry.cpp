@@ -1,23 +1,24 @@
 #include <ros/ros.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <tf2/utils.h>
 #include <geometry_msgs/Pose2D.h>
 #include <geometry_msgs/TwistStamped.h>
 #include <geometry_msgs/TransformStamped.h>
 #include <nav_msgs/Odometry.h>
+#include <sensor_msgs/Imu.h>
+#include <message_filters/cache.h>
+#include <message_filters/subscriber.h>
+#include <angles/angles.h>
 
 std::string base_frame;
 std::string odom_frame;
-double x_stddev = 0.002;
-double y_stddev = 0.002;
-double rotation_stddev = 0.017;
-double cov_xy = 0.0;
-double cov_xrotation = 0.0;
-double cov_yrotation = 0.0;
 
 ros::Publisher odom_publisher;
 nav_msgs::Odometry odom;
 geometry_msgs::Pose2D pose;
+typedef message_filters::Cache<sensor_msgs::Imu> ImuCache;
+boost::shared_ptr<ImuCache> imu_cache;
 
 template<typename T>
 void paramCached(const ros::NodeHandle& nh, const std::string& param_name, T& param_val, const T& default_val)
@@ -85,33 +86,41 @@ void updateParams()
 void velocity_callback(const geometry_msgs::TwistStampedConstPtr msg)
 {
 	updateParams();
+    sensor_msgs::ImuConstPtr previous_imu = imu_cache->getElemBeforeTime(odom.header.stamp);
+    sensor_msgs::ImuConstPtr current_imu = imu_cache->getElemBeforeTime(msg->header.stamp);
 
-	const geometry_msgs::Twist& velocity = msg->twist;
+    // without imu
+	geometry_msgs::Twist velocity = msg->twist;
+    if (current_imu && previous_imu)
+    {
+    	// use imu, if we have data
+    	double previous_theta = tf2::getYaw(previous_imu->orientation);
+    	double current_theta = tf2::getYaw(current_imu->orientation);
+    	double delta_yaw = current_theta - previous_theta;
+    	velocity.angular.z = delta_yaw / (current_imu->header.stamp - previous_imu->header.stamp).toSec();
+    }
+	double dt = (odom.header.stamp - msg->header.stamp).toSec();
+	double delta_x = (velocity.linear.x * cos(pose.theta) - velocity.linear.y * sin(pose.theta)) * dt;
+	double delta_y = (velocity.linear.x * sin(pose.theta) + velocity.linear.y * cos(pose.theta)) * dt;
+	double delta_yaw = velocity.angular.z * dt;
 
-    double dt = (odom.header.stamp - msg->header.stamp).toSec();
-    double delta_x = (velocity.linear.x * cos(pose.theta) - velocity.linear.y * sin(pose.theta)) * dt;
-    double delta_y = (velocity.linear.x * sin(pose.theta) + velocity.linear.y * cos(pose.theta)) * dt;
-    double delta_yaw = velocity.angular.z * dt;
+	pose.x += delta_x;
+	pose.y += delta_y;
+	pose.theta += delta_yaw;
 
-    pose.x += delta_x;
-    pose.y += delta_y;
-    pose.theta += delta_yaw;
 
-    odom.header.stamp = msg->header.stamp;
-    odom.header.frame_id = odom_frame;
+	odom.header.stamp = msg->header.stamp;
+	odom.header.frame_id = odom_frame;
 
-    // set the position
-    odom.pose.pose.position.x = pose.x;
-    odom.pose.pose.position.y = pose.y;
-    odom.pose.pose.position.z = 0.0;
+	// set the position
+	odom.pose.pose.position.x = pose.x;
+	odom.pose.pose.position.y = pose.y;
+	odom.pose.pose.position.z = 0.0;
 	tf2::Quaternion quaternion;
 	quaternion.setRPY(0, 0, pose.theta);
 	tf2::convert(quaternion, odom.pose.pose.orientation);
-
-    // copy the velocity
-    odom.child_frame_id = base_frame;
-    odom.twist.twist = velocity;
-
+	// copy the velocity
+	odom.twist.twist = velocity;
     odom_publisher.publish(odom);
 }
 
@@ -123,6 +132,8 @@ int main(int argc, char** argv)
 
 	odom_publisher = n.advertise<nav_msgs::Odometry>("odom", 50);
 	ros::Subscriber velocity_subscriber = n.subscribe("velocity", 50, &velocity_callback);
+	message_filters::Subscriber<sensor_msgs::Imu> imu_subscriber(n, "imu", 1);
+	imu_cache.reset(new  ImuCache(imu_subscriber, 100));
 
 	ros::spin();
 }
