@@ -2,6 +2,7 @@
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf2/utils.h>
+#include <tf2_ros/transform_broadcaster.h>
 #include <geometry_msgs/Pose2D.h>
 #include <geometry_msgs/TwistStamped.h>
 #include <geometry_msgs/TransformStamped.h>
@@ -12,10 +13,12 @@
 #include <angles/angles.h>
 
 ros::Publisher odom_publisher;
+geometry_msgs::TransformStamped transform;
 nav_msgs::Odometry odom;
 geometry_msgs::Pose2D pose;
 typedef message_filters::Cache<sensor_msgs::Imu> ImuCache;
 boost::shared_ptr<ImuCache> imu_cache;
+boost::shared_ptr<tf2_ros::TransformBroadcaster> tfb;
 
 template<typename T>
 void paramCached(const ros::NodeHandle& nh, const std::string& param_name, T& param_val, const T& default_val)
@@ -130,9 +133,17 @@ void velocity_callback(const geometry_msgs::PointStampedConstPtr msg)
 	tf2::Quaternion quaternion;
 	quaternion.setRPY(0, 0, pose.theta);
 	tf2::convert(quaternion, odom.pose.pose.orientation);
-	// copy the velocity
 	odom.twist.twist = velocity;
 	odom_publisher.publish(odom);
+
+	// publish transform
+	transform.header = odom.header;
+	transform.child_frame_id = odom.child_frame_id;
+	transform.transform.translation.x = odom.pose.pose.position.x;
+	transform.transform.translation.y = odom.pose.pose.position.y;
+	transform.transform.translation.z = odom.pose.pose.position.z;
+	transform.transform.rotation = odom.pose.pose.orientation;
+	tfb->sendTransform(transform);
 }
 
 int main(int argc, char** argv)
@@ -140,6 +151,8 @@ int main(int argc, char** argv)
 	ros::init(argc, argv, "odometry_publisher");
 
 	ros::NodeHandle n;
+
+	tfb.reset(new tf2_ros::TransformBroadcaster);
 
 	odom_publisher = n.advertise<nav_msgs::Odometry>("odom", 50);
 	ros::Subscriber velocity_subscriber = n.subscribe("velocity", 50, &velocity_callback);
