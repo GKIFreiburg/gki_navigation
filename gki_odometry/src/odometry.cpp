@@ -102,6 +102,8 @@ void velocity_callback(const geometry_msgs::PointStampedConstPtr msg)
 
 	// without imu
 	geometry_msgs::Twist velocity = twist.twist;
+	double dt = (twist.header.stamp - odom.header.stamp).toSec();
+	double delta_yaw = 0.0;
 	if (current_imu && previous_imu)
 	{
 		if (current_imu->header.stamp == previous_imu->header.stamp)
@@ -112,13 +114,15 @@ void velocity_callback(const geometry_msgs::PointStampedConstPtr msg)
 		// use imu, if we have data
 		double previous_theta = tf2::getYaw(previous_imu->orientation);
 		double current_theta = tf2::getYaw(current_imu->orientation);
-		double delta_yaw = current_theta - previous_theta;
+		delta_yaw = -angles::shortest_angular_distance(current_theta, previous_theta);
 		velocity.angular.z = delta_yaw / (current_imu->header.stamp - previous_imu->header.stamp).toSec();
 	}
-	double dt = (twist.header.stamp - odom.header.stamp).toSec();
+	else
+	{
+		delta_yaw = velocity.angular.z * dt;
+	}
 	double delta_x = (velocity.linear.x * cos(pose.theta) - velocity.linear.y * sin(pose.theta)) * dt;
 	double delta_y = (velocity.linear.x * sin(pose.theta) + velocity.linear.y * cos(pose.theta)) * dt;
-	double delta_yaw = velocity.angular.z * dt;
 
 	pose.x += delta_x;
 	pose.y += delta_y;
