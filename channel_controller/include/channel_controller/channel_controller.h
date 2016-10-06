@@ -5,7 +5,7 @@
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/LaserScan.h>
 #include <visualization_msgs/MarkerArray.h>
-#include "dynamicvoronoi/dynamicvoronoi.h"
+#include <dynamicvoronoi/dynamicvoronoi.h>
 
 namespace channel_controller
 {

@@ -115,9 +115,9 @@ add_library(${PROJECT_NAME}
 # add_dependencies(channel_controller_node channel_controller_generate_messages_cpp)
 
 ## Specify libraries to link a library or executable target against
-# target_link_libraries(channel_controller_node
-#   ${catkin_LIBRARIES}
-# )
+target_link_libraries(${PROJECT_NAME}
+  ${catkin_LIBRARIES}
+)
 
 #############
 ## Install ##
