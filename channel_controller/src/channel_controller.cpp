@@ -783,8 +783,14 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
         straight_down(fabs(channel_dir), angles::from_degrees(10.0), angles::from_degrees(60.0));
 
     // go slower when narrow
-    float around_dist = voronoi_.getDistance(0, 0) * costmap_->getResolution();
-    double close_to_obstacles_scale = 0.33 + 0.66 * straight_up(around_dist, 0.3, 0.6);
+    tf::Pose zero;
+    bool in_bounds = true;
+    double around_dist = getDistanceAtPose(zero, &in_bounds);
+    double close_to_obstacles_scale = 1;
+    if (in_bounds)
+    {
+    	close_to_obstacles_scale = 0.33 + 0.66 * straight_up(around_dist, 0.3, 0.6);
+    }
 
 	double channel_width_tv_scale = straight_up(channel_width,
                 safe_waypoint_channel_width_, safe_waypoint_channel_width_at_max_tv_);
