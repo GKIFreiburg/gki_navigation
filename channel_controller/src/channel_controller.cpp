@@ -782,8 +782,11 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
     double bad_direction_tv_scale =
         straight_down(fabs(channel_dir), angles::from_degrees(10.0), angles::from_degrees(60.0));
 
-    // go slower when narrow FIXME later: maybe only when narrow within where we are (not at end of channel)
-    double channel_width_tv_scale = straight_up(channel_width,
+    // go slower when narrow
+    float around_dist = voronoi_.getDistance(0, 0) * costmap_->getResolution();
+    double close_to_obstacles_scale = 0.33 + 0.66 * straight_up(around_dist, 0.3, 0.6);
+
+	double channel_width_tv_scale = straight_up(channel_width,
                 safe_waypoint_channel_width_, safe_waypoint_channel_width_at_max_tv_);
 
     // for now ignore close to wp unless goal.
@@ -808,6 +811,9 @@ bool ChannelController::computeVelocityForChannel(const DriveChannel & channel, 
     tv_scale = std::min(tv_scale, channel_width_tv_scale);
     if(tv_scale == channel_width_tv_scale)
         tv_scale_reason = "channel_width";
+    tv_scale = std::min(tv_scale, close_to_obstacles_scale);
+    if(tv_scale == close_to_goal_tv_scale)
+        tv_scale_reason = "close_to_obstacles";
     tv_scale = std::min(tv_scale, close_to_goal_tv_scale);
     if(tv_scale == close_to_goal_tv_scale)
         tv_scale_reason = "close_to_goal";
