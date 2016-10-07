@@ -20,6 +20,8 @@ typedef message_filters::Cache<sensor_msgs::Imu> ImuCache;
 boost::shared_ptr<ImuCache> imu_cache;
 boost::shared_ptr<tf2_ros::TransformBroadcaster> tfb;
 
+double imu_yaw_drift;
+
 template<typename T>
 void paramCached(const ros::NodeHandle& nh, const std::string& param_name, T& param_val, const T& default_val)
 {
@@ -86,7 +88,23 @@ void updateParams()
 void velocity_callback(const geometry_msgs::PointStampedConstPtr msg)
 {
 	updateParams();
-	
+	/*
+	if (! imu_initialized)
+	{
+		ros::Duration diff = imu_cache->getLatestTime() - imu->chache->getOldestTime();
+		if (diff.toSec() > 5.0)
+		{
+			std::vector<sensor_msgs::ImuConstPtr> msgs = imu_cache->getInterval (const ros::Time &start, const ros::Time &end);
+			imu_yaw_drift = 0.0;
+			for_each(sensor_msgs::ImuConstPtr msg, msgs)
+			{
+				imu_yaw_drift += tf2::getYaw(msg->orientation);
+			}
+			imu_yaw_drift /= (double)msgs.size();
+		}
+		return;
+	}
+*/	
 	geometry_msgs::TwistStamped twist;
 	twist.header.stamp = msg->header.stamp;
 	if (twist.header.stamp == odom.header.stamp)
@@ -161,7 +179,7 @@ int main(int argc, char** argv)
 	odom_publisher = n.advertise<nav_msgs::Odometry>("odom", 50);
 	ros::Subscriber velocity_subscriber = n.subscribe("velocity", 50, &velocity_callback);
 	message_filters::Subscriber<sensor_msgs::Imu> imu_subscriber(n, "imu", 1);
-	imu_cache.reset(new  ImuCache(imu_subscriber, 100));
+	imu_cache.reset(new  ImuCache(imu_subscriber, 1000));
 
 	ros::spin();
 }
