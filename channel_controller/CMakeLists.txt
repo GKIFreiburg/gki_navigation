@@ -87,7 +87,7 @@ catkin_package(
  INCLUDE_DIRS include
  LIBRARIES ${PROJECT_NAME}
  CATKIN_DEPENDS angles dynamicvoronoi kobuki_msgs nav_core pluginlib roscpp visualization_msgs
- DEPENDS system_lib
+# DEPENDS system_lib
 )
 
 ###########
